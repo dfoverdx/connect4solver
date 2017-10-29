@@ -22,7 +22,7 @@ using namespace connect4solver;
 //const char BACKSPACE = '\b';
 //const char ESCAPE = (char)27;
 
-int main() {
+int main(int argc, const char* argv[]) {
     HWND console = GetConsoleWindow();
     HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
     RECT r;
