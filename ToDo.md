@@ -80,8 +80,8 @@ SearchTree
 *   Figure out how to store the route taken in order to save/load progress between runs--may or may not be in the DB
 
 
-Garbage Collector (current SearchTree.cpp)
-------------------------------------------
+Garbage Collector (currently in SearchTree.cpp)
+-----------------------------------------------
 
 *   Pull GC out of SearchTree.cpp into its own class, then add `GarbageCollector` as a friend to `SearchTree`
     -   Pull all memory management out of `SearchTree` and into new class
@@ -108,8 +108,8 @@ Garbage Collector (current SearchTree.cpp)
 *   If moving GC into its own thread, `SearchTree::setCheckMemoryAtInterval()` becomes unnecessary anyway
 
 
-Progress Printer (current SearchTree.IO.cpp)
---------------------------------------------
+Progress Printer (currently in SearchTree.IO.cpp)
+-------------------------------------------------
 
 *   Create `ProgressPrinter` class, add it as a friend to `SearchTree`, and refactor all code out of 
     SearchTree.IO.cpp.
