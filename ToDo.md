@@ -67,8 +67,8 @@ SearchTree
 
 #### SearchTree.cpp ####
 
-*   Consider moving the `search()` parts of SearchTree.cpp into separate SearchTree.Search.cpp file leaving really
-    the only things in SearchTree.cpp to be `SearchTree::run()` and possibly `SearchTree::setMaxMemoryToUse()`
+*   ~~Consider moving the `search()` parts of SearchTree.cpp into separate SearchTree.Search.cpp file leaving really
+    the only things in SearchTree.cpp to be `SearchTree::run()` and possibly `SearchTree::setMaxMemoryToUse()`~~
 *   Add parallelism
     -   Consider writing version of code that doesn't use cpp11-on-multicore's `bitfield`, and instead uses masks
         with `atomic<T>::compare_exchange_strong()`.  This may, in fact, be necessary, as I'm not entirely sure why
@@ -88,6 +88,7 @@ Garbage Collector (currently in SearchTree.cpp)
 *   Probably should delete `USE_SMART_GC` code since, as the majaority of moves get removed from a cache during GC, 
     it is slower to maintain the hashset of unreferenced moves and takes more memory than simply iterating through the 
     whole cache each time
+    -   If not, need to add `MoveManager` as friend to `GarbageCollector`
     -   Consider a hybrid approach that uses elements of smart GC within dumb GC code so that if we have to make 
         multiple passes through a certain depth, we've tracked just the nodes that were recently set to 0-references
         on the last pass.  This may or may not actually reduce performance.
@@ -96,7 +97,7 @@ Garbage Collector (currently in SearchTree.cpp)
     both the GC and the search lock the depth's cache's mutex when cleaning/enumerating boards, the GC could be 
     abstracted to run on its own thread.  This optimization (if it even *is* an optimzation) may very well be far more
     trouble than it is worth--but might be fun.
-*   Add state of GC (running, not running, progress?) to `SearchTree::status`
+*   Add state of GC (running, not running, progress?) to ~~`SearchTree::status`~~ `GarbageCollector`
 *   Consider changing `SearchTree::cal.moveCache` from type `MoveCache[]` to `MoveCache*[]`
     -   This allows the GC, if enough moves are deleted from a cache, to create a new cache, copy the items from the 
         old one into the new one, delete the old one, and set the pointer to the new one.  Since a cache only stores 
@@ -137,8 +138,8 @@ Add database support: `DatabaseManager` class
         *   `next_hash` (FK)
         
         Note: since each red move is going to have exactly one black move, consider somehow storing `black_move_col` 
-            and `black_move_hash` inside `tbl_move_move` and enforcing that `depth` alwayas be even (for red turn
-            depths)
+        and `black_move_hash` inside `tbl_move_move` and enforcing that `depth` always be even (for red turn
+        depths)
 *   Figure out how to determine if a move can possibly follow from a previous board state
     -   Probably consists of figuring out if you can use bit manipulation in T-SQL (looks like you can)
         *   [Comparing two bitmasks in SQL to see if any of the bits match](https://stackoverflow.com/questions/143712/comparing-two-bitmasks-in-sql-to-see-if-any-of-the-bits-match)
