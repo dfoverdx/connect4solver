@@ -103,6 +103,7 @@
       <Optimization>Disabled</Optimization>
       <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <SDLCheck>true</SDLCheck>
+      <AdditionalIncludeDirectories>$(SolutionDir)\cpp11-on-multicore\common;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -137,6 +138,7 @@
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <SDLCheck>true</SDLCheck>
+      <AdditionalIncludeDirectories>$(SolutionDir)\cpp11-on-multicore\common;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -146,10 +148,23 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="Constants.ErrorMessages.h" />
+    <ClInclude Include="Macros.h" />
+    <ClInclude Include="MoveData.CompilerFlagTypedefs.h" />
+    <ClInclude Include="MoveManager.h" />
     <ClInclude Include="Board.h" />
+    <ClInclude Include="BoardHash.h" />
+    <ClInclude Include="BoardState.h" />
+    <ClInclude Include="CompilerFlags.h" />
+    <ClInclude Include="Constants.Board.h" />
     <ClInclude Include="Constants.h" />
+    <ClInclude Include="Helpers.h" />
+    <ClInclude Include="Constants.MoveData.h" />
+    <ClInclude Include="NextMoveDescriptor.h" />
+    <ClInclude Include="SearchTree.CompilerFlagIncludes.h" />
+    <ClInclude Include="SearchTree.Macros.h" />
+    <ClInclude Include="StaticAssertions.h" />
     <ClInclude Include="GameOverState.h" />
-    <ClInclude Include="RedHashes.h" />
     <ClInclude Include="MoveData.h" />
     <ClInclude Include="Piece.h" />
     <ClInclude Include="PopCount.h" />
@@ -158,16 +173,25 @@
     <ClInclude Include="Typedefs.h" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="Board.cpp" />
-    <ClCompile Include="RedHashes.cpp" />
-    <ClCompile Include="main.cpp" />
     <ClCompile Include="MoveData.cpp" />
+    <ClCompile Include="MoveData.Mask.cpp" />
+    <ClCompile Include="MoveManager.cpp" />
+    <ClCompile Include="Board.cpp" />
+    <ClCompile Include="BoardState.cpp" />
+    <ClCompile Include="Constants.Threading.h" />
+    <ClCompile Include="main.cpp" />
+    <ClCompile Include="MoveData.BitField.cpp" />
     <ClCompile Include="PopCount.cpp" />
     <ClCompile Include="SearchTree.cpp" />
-    <ClCompile Include="SortingNetwork.cpp" />
+    <ClCompile Include="SearchTree.IO.cpp" />
   </ItemGroup>
   <ItemGroup>
     <Natvis Include="connect4solver.natvis" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\cpp11-on-multicore\cpp11-on-multicore.vcxproj">
+      <Project>{8c7dae51-6952-44f3-af8f-f152fb832102}</Project>
+    </ProjectReference>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

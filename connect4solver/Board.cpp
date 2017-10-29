@@ -1,34 +1,21 @@
 #include <algorithm>
 #include <cassert>
 #include <exception>
+#include <intrin.h>
 #include <string>
 #include <utility>
 #include "Board.h"
+#include "Constants.Board.h"
 #include "PopCount.h"
 
 using namespace std;
 using namespace connect4solver;
-
-#ifndef NDEBUG
-#include <bitset>
-
-static const string getBinary(ull l) {
-    string r = string();
-    for (int i = 7; i >= 0; --i) {
-        r += bitset<8>(((char*)(&l))[i]).to_string() + '\n';
-    }
-    return r;
-}
-
-#endif // !NDEBUG
 
 #pragma region Macros
 
 #define colIdx(x) ((x) << 3)
 #define colMask(cIdx) (EMPTY_COLUMN_BITS << (cIdx))
 #define getCol(pieces, cIdx) ((pieces & colMask(cIdx)) >> (cIdx))
-
-#ifdef ALWAYS_USE_HEURISTIC
 
 #define checkWin(pieces, spaces, condition, winHueristic, piece) \
 if ((spaces & condition) == condition && \
@@ -47,39 +34,19 @@ if ((spaces & condition) == condition && \
 
 #define checkWins(condition) \
 checkBlackWin(bShiftedPieces, bShiftedAvailableSpaces, condition); \
-checkRedWin(rShiftedPieces, rShiftedAvailableSpaces, condition);
-
-#endif // ALWAYS_USE_HEURISTIC
+checkRedWin(rShiftedPieces, rShiftedAvailableSpaces, condition)
 #pragma endregion
 
-namespace boardTemplates {
-    template <
-        uchar byte, // byte to repeat
-        uchar N // 0-indexed number of repeats
-    >
-        struct repeatedByte {
-        enum : ull { value = (repeatedByte<byte, N - 1>::value << 8) + byte };
-    };
+#pragma region Constants
+constexpr uchar SYMMETRIC('\3');
+constexpr uchar POSSIBLY_SYMMETRIC('\2');
+constexpr uchar IMPOSSIBLY_SYMMETRIC('\0');
 
-    template <uchar byte>
-    struct repeatedByte<byte, 0> {
-        enum : ull { value = byte };
-    };
-}
+constexpr BoardPieces VERTICAL_WIN = 0xF;
+constexpr BoardPieces HORIZONTAL_WIN = 0x01010101;
+constexpr BoardPieces DIAGONAL_FORWARD_WIN = 0x08040201;
 
-const BoardPieces EMPTY_COLUMN_BITS = (1 << BOARD_HEIGHT) - 1;
-const BoardPieces EMPTY_OPEN_SPACES_BITS = boardTemplates::repeatedByte<EMPTY_COLUMN_BITS, MAX_COLUMN>::value;
-const BoardPieces BOARD_MASK = EMPTY_OPEN_SPACES_BITS;
-
-const BoardPieces VERTICAL_WIN = 0xF;
-const BoardPieces HORIZONTAL_WIN = 0x01010101;
-const BoardPieces DIAGONAL_FORWARD_WIN = 0x08040201;
-
-#ifdef ALWAYS_USE_HEURISTIC
 static const BoardPieces DIAGONAL_BACKWARD_WIN = 0x01020408ull;
-#else
-static const BoardPieces DIAGONAL_BACKWARD_WIN = 0x01020408ull << colIdx(3);
-#endif
 
 typedef pair<int, int> ShiftLimits;
 
@@ -101,38 +68,49 @@ static const ShiftLimits V_SHIFT_LIMITS[BOARD_HEIGHT]{
     { 1, 2 },
     { 2, 2 }
 };
+#pragma endregion
 
-#ifdef ALWAYS_USE_HEURISTIC
-
+#pragma region Board definitions
+#pragma region Constructors
+// default constructor -- empty board
 Board::Board() :
-    m_state({ 0, EMPTY_OPEN_SPACES_BITS }), heuristic(0), boardHash(0), playerTurn(BLACK), isSymmetric(true) {}
+    m_state({ 0, EMPTY_OPEN_SPACES_BITS }), heuristic(0), boardHash(0), playerTurn(BLACK), symmetry(SYMMETRIC),
+    validMoves(0x7F) {}
 
+// copy constructor
 Board::Board(const Board &b) :
     m_state(b.m_state), heuristic(b.heuristic), boardHash(b.boardHash), playerTurn(b.playerTurn),
-    isSymmetric(b.isSymmetric) {}
+    symmetry(b.symmetry), validMoves(b.validMoves) {}
 
-Board::Board(const BoardState &state, const piece playerTurn, const int x) :
-    m_state(state), heuristic(calculateHeuristic(state)), boardHash(calcBoardHash(state)), playerTurn(playerTurn),
-    isSymmetric(determineIsSymmetric(state)) {}
+// construtor used when adding a piece
+Board::Board(const BoardState &state, const BoardHash &prevHash, const bool possiblySymmetric, const piece playerTurn,
+    const int x) :
+    m_state(state), heuristic(calcHeuristic(state)), boardHash(calcBoardHash(prevHash, playerTurn, x)),
+    playerTurn(playerTurn), symmetry(calcSymmetry(possiblySymmetric, state)),
+    validMoves(calcValidMoves(state)) {}
 
-Board::Board(const BoardState &state, const piece playerTurn, const bool isSymmetric, const Heuristic heuristic) :
+// constructor used when building board from hash or mirroring a board
+Board::Board(const BoardState &state, const piece playerTurn, const uchar symmetry, const Heuristic heuristic) :
     m_state(state), heuristic(heuristic), boardHash(calcBoardHash(state)), playerTurn(playerTurn),
-    isSymmetric(isSymmetric) {}
+    symmetry(symmetry), validMoves(calcValidMoves(state)) {}
+#pragma endregion
 
-const gameOverState Board::getGameOver() const
+inline const gameOverState Board::getGameOver() const
 {
     switch (heuristic) {
     case BLACK_WON_HEURISTIC:
         return gameOverState::blackWon;
     case BLACK_LOST_HEURISTIC:
+    case CATS_GAME_HEURISTIC:
         return gameOverState::blackLost;
     default:
         return gameOverState::unfinished;
     }
 }
 
-const Heuristic Board::calculateHeuristic(const BoardState &state)
+const Heuristic Board::calcHeuristic(const BoardState &state)
 {
+    assert(state.openSpaces != EMPTY_OPEN_SPACES_BITS);
     BoardPieces bPieces = ~state.pieces & (state.openSpaces ^ BOARD_MASK);
     BoardPieces bAvailableSpaces = (bPieces ^ state.openSpaces) & BOARD_MASK;
     BoardPieces rPieces = state.pieces & (state.openSpaces ^ BOARD_MASK);
@@ -164,184 +142,18 @@ const Heuristic Board::calculateHeuristic(const BoardState &state)
         }
     }
 
-    return scores[0] - scores[1];
-}
-
-#else
-
-Board::Board() :
-    m_state({ 0, EMPTY_OPEN_SPACES_BITS }), m_heuristic(0), m_calculatedHeuristic(true), boardHash(0),
-    gameOver(gameOverState::unfinished), playerTurn(BLACK), isSymmetric(true) {}
-
-Board::Board(const Board& b) :
-    m_state(b.m_state), m_heuristic(b.m_heuristic), m_calculatedHeuristic(b.m_calculatedHeuristic),
-    boardHash(b.boardHash), playerTurn(b.playerTurn), gameOver(b.gameOver), isSymmetric(b.isSymmetric) {}
-
-Board::Board(const BoardState &state, const piece playerTurn, const bool isSymmetric, const gameOverState gameOver,
-    const Heuristic heuristic, const bool calculatedHeuristic) :
-    m_state(state), m_heuristic(heuristic), m_calculatedHeuristic(calculatedHeuristic),
-    boardHash(calcBoardHash(state)), playerTurn(playerTurn), gameOver(gameOver), isSymmetric(isSymmetric) {}
-
-Board::Board(const BoardState &state, const piece playerTurn, const int x) :
-    m_state(state), m_heuristic(0), m_calculatedHeuristic(false),
-    boardHash(calcBoardHash(state)), playerTurn(playerTurn),
-    gameOver(determineGameOverState(state, x)), isSymmetric(determineIsSymmetric(state)) {}
-
-const Heuristic Board::getHeuristic()
-{
-    if (!m_calculatedHeuristic) {
-        m_heuristic = calculateHeuristic();
-        m_calculatedHeuristic = true;
-    }
-
-    return m_heuristic;
-}
-
-gameOverState Board::determineGameOverState(const BoardState &state, const int x)
-{
-    const int y = getColHeight(state.openSpaces, x) - 1;
-    const int cIdx = colIdx(x);
-#ifndef NDEBUG
-    long long pieceIdx = cIdx + y;
-    assert(static_cast<bool>(!_bittest64((long long*)&state.openSpaces, pieceIdx)));
-    piece p = piece(_bittest64((long long*)&state.pieces, pieceIdx));
-#else
-    piece p = piece(_bittest64((long long*)&state.pieces, cIdx + y));
-#endif
-
-    const gameOverState pWon = p == RED ? gameOverState::blackLost : gameOverState::blackWon;
-
-    BoardPieces playerPieces = p == RED ? state.pieces : ~state.pieces;
-    playerPieces &= state.openSpaces ^ BOARD_MASK;
-
-    // check vertical
-    if (y >= 3 && ((playerPieces >> (colIdx(x) + y - 3)) & VERTICAL_WIN) == VERTICAL_WIN) {
-        return pWon;
-    }
-
-    // check horizontal
-    ShiftLimits limits = H_SHIFT_LIMITS[x];
-
-    for (int i = limits.first; i <= limits.second; ++i) {
-        if (((playerPieces >> (colIdx(i) + y)) & HORIZONTAL_WIN) == HORIZONTAL_WIN) {
-            return pWon;
+    if (scores[0] == 0) {                   // no way that black can win
+        if (scores[1] == 0) {               // no way that either player can win
+            return CATS_GAME_HEURISTIC;
         }
-    }
-
-    // check diagonal /
-    // shift right such that y = x
-    BoardPieces shiftedPieces = playerPieces;
-    int s = x;
-    if (x > y) {
-        // shift left
-        shiftedPieces >>= colIdx(x - y);
-        s = y;
-    }
-    else if (x < y) {
-        // shift down
-        shiftedPieces >>= y - x;
-    }
-
-    limits = V_SHIFT_LIMITS[s];
-
-    for (int i = limits.first; i <= limits.second; ++i) {
-        BoardPieces tmpShiftedPieces = shiftedPieces >> (9 * i);
-        if ((tmpShiftedPieces & DIAGONAL_FORWARD_WIN) == DIAGONAL_FORWARD_WIN) {
-            return pWon;
-        }
-    }
-
-    if (x + y >= BOARD_WIDTH) {
-        return gameOverState::unfinished;
-    }
-
-    // check diagonal \ 
-    shiftedPieces = playerPieces;
-    s = MAX_COLUMN - x;
-    if (s > y) {
-        // shift right
-        shiftedPieces <<= colIdx(s - y);
-        s = y;
-    }
-    else if (s < y) {
-        // shift down
-        shiftedPieces >>= y - s;
-    }
-
-    limits = V_SHIFT_LIMITS[s];
-
-    for (int i = limits.first; i <= limits.second; ++i) {
-        BoardPieces tmpShiftedPieces = shiftedPieces << (7 * i);
-        if ((tmpShiftedPieces & DIAGONAL_BACKWARD_WIN) == DIAGONAL_BACKWARD_WIN) {
-            return pWon;
-        }
-    }
-
-    return gameOverState::unfinished;
-}
-
-const Heuristic Board::calculateHeuristic() const
-{
-    // double check that the game isn't already over
-    switch (gameOver) {
-    case gameOverState::blackLost:
-        return BLACK_LOST_HEURISTIC;
-
-    case gameOverState::blackWon:
-        return BLACK_WON_HEURISTIC;
-    }
-
-    Heuristic scores[2] = { 0, 0 };
-
-    for (piece p = piece(0); p < 2; p = piece(p + 1)) {
-        BoardPieces playerPieces = p == RED ? m_state.pieces : ~m_state.pieces;
-        playerPieces &= m_state.openSpaces ^ BOARD_MASK;
-        BoardPieces availableSpaces = (playerPieces ^ m_state.openSpaces) & BOARD_MASK;
-
-        for (int x = 0; x < BOARD_WIDTH; ++x) {
-            for (int y = 0; y < BOARD_HEIGHT; ++y) {
-                BoardPieces shiftedPieces = playerPieces >> (colIdx(x) + y);
-                BoardPieces shiftedAvailableSpaces = availableSpaces >> (colIdx(x) + y);
-
-                // check vertical
-                if (y < 3 &&
-                    (shiftedAvailableSpaces & VERTICAL_WIN) == VERTICAL_WIN &&
-                    shiftedPieces & VERTICAL_WIN) {
-                    scores[p] += 1ull << (popCount64(shiftedPieces & VERTICAL_WIN) - 1);
-                }
-
-                // check horizontal
-                if (x < 4) {
-                    if ((shiftedAvailableSpaces & HORIZONTAL_WIN) == HORIZONTAL_WIN &&
-                        shiftedPieces & HORIZONTAL_WIN) {
-                        scores[p] += 1ull << (popCount64(shiftedPieces & HORIZONTAL_WIN) - 1);
-                    }
-
-                    // check diagonals
-                    if (y < 3) {
-                        // check /
-                        if ((shiftedAvailableSpaces & DIAGONAL_FORWARD_WIN) == DIAGONAL_FORWARD_WIN &&
-                            shiftedPieces & DIAGONAL_FORWARD_WIN) {
-                            scores[p] += 1ull << (popCount64(shiftedPieces & DIAGONAL_FORWARD_WIN));
-                        }
-
-                        // check \ 
-                        shiftedPieces = playerPieces << (colIdx(x) - y);
-                        shiftedAvailableSpaces = availableSpaces << (colIdx(x) - y);
-                        if ((shiftedAvailableSpaces & DIAGONAL_BACKWARD_WIN) == DIAGONAL_BACKWARD_WIN &&
-                            shiftedPieces & DIAGONAL_BACKWARD_WIN) {
-                            scores[p] += 1ull << (popCount64(shiftedPieces * DIAGONAL_BACKWARD_WIN));
-                        }
-                    }
-                }
-            }
+        else
+        {
+            return BLACK_LOST_HEURISTIC;
         }
     }
 
     return scores[0] - scores[1];
 }
-
-#endif // ALWAYS_USE_HEURISTIC
 
 Board& Board::operator=(const Board &other) {
     if (this == &other) {
@@ -349,24 +161,33 @@ Board& Board::operator=(const Board &other) {
     }
 
     assignConst(BoardState, m_state, other);
-
-#ifdef ALWAYS_USE_HEURISTIC
     assignConst(Heuristic, heuristic, other);
-#else
-    m_heuristic = other.m_heuristic;
-    m_calculatedHeuristic = other.m_calculatedHeuristic;
-    assignConst(gameOverState, gameOver, other);
-#endif // ALWAYS_USE_HEURISTIC
-
     assignConst(BoardHash, boardHash, other);
     assignConst(piece, playerTurn, other);
-    assignConst(bool, isSymmetric, other);
+    assignConst(uchar, symmetry, other);
+    assignConst(ValidMoves, validMoves, other);
     return *this;
 }
 
+const Board Board::fromHash(BoardHash hash)
+{
+    piece playerTurn;
+    BoardState state = BoardState::fromHash(hash, playerTurn);
+    uchar symmetry = calcSymmetry(true, state);
+    Heuristic heuristic = 0;
+    if (state.openSpaces != EMPTY_OPEN_SPACES_BITS) {
+        heuristic = calcHeuristic(state);
+    }
+
+    return Board(state, playerTurn, symmetry, heuristic);
+}
+
+// currently unused, so performance doesn't matter
 inline const int Board::getColHeight(const int x) const
 {
-    return getColHeight(m_state.openSpaces, x);
+    // todo: figure out how to use const element
+    BoardHashBitField bf = boardHash;
+    return static_cast<int>(bf.heights[x]);
 }
 
 const piece Board::getPiece(const int x, const int y) const {
@@ -380,71 +201,125 @@ const piece Board::getPiece(const int x, const int y) const {
     return piece(!!(m_state.pieces & pieceMask));
 }
 
+// Gets the 6th (BOARD_HEIGHTth) bit of each byte in m_state.openSpaces and returns their values in a uchar.
+// from https://stackoverflow.com/a/46866751/3120446 
+inline const ValidMoves Board::calcValidMoves(const BoardState &state)
+{
+    // puts openSpaces into a vector
+    __m128i n = _mm_set_epi64x(0, state.openSpaces);
+
+    // _mm_slli_epi64: shifts bits up 2 so the 6th bit is at the 8th bit position
+    // _mm_movemask_epi8: takes the high bit of every byte in the vector and concatenates them
+    return uchar(_mm_movemask_epi8(_mm_slli_epi64(n, (8 - BOARD_HEIGHT))));
+}
+
 const bool Board::isValidMove(const int x) const
 {
     assert(x / BOARD_WIDTH == 0);
     return (m_state.openSpaces & colMask(colIdx(x))) > 0;
 }
 
-Board Board::addPiece(const int x) const {
+Board Board::addPiece(int x) const {
     assert(x / BOARD_WIDTH == 0);
     if (!isValidMove(x)) {
         throw exception(("Tried to add piece to full column: " + to_string((int)x)).c_str());
     }
 
-#ifdef ALWAYS_USE_HEURISTIC
     if (getGameOver() != gameOverState::unfinished) {
         throw exception("Tried to add a piece when the game is over");
     }
-#else
-    if (gameOver != gameOverState::unfinished) {
-        throw exception("Tried to add a piece when the game is over");
-    }
-#endif // ALWAYS_USE_HEURISTIC
 
-    BoardPieces openSpacesMask = colMask(colIdx(x));
-    BoardPieces openSpaces = m_state.openSpaces & openSpacesMask;
-    BoardPieces pieceMask = 0;
-    _BitScanForward64((ulong*)&pieceMask, openSpaces);
-    pieceMask = 1ll << pieceMask;
-    openSpaces &= openSpaces << 1;
-    openSpaces |= m_state.openSpaces & (-1ll ^ (0xFFll << colIdx(x)));
+    BoardPiecesBitField piecesBF = m_state.piecesBF;
+    BoardPiecesBitField openSpacesBF = m_state.openSpacesBF;
 
-    BoardPieces pieces = m_state.pieces ^ (-playerTurn ^ m_state.pieces) & pieceMask;
-    return Board({ pieces, openSpaces }, piece(!playerTurn), x);
+    ulong pieceIndex;
+    _BitScanForward(&pieceIndex, static_cast<ulong>(openSpacesBF.cols[x]));
+    assert(pieceIndex < BOARD_HEIGHT);
+
+    piecesBF.cols[x] |= BoardPieces(playerTurn) << pieceIndex;
+    openSpacesBF.cols[x] <<= 1;
+
+    return Board({ piecesBF, openSpacesBF }, boardHash, symmetryBF.possiblySymmetric, piece(!playerTurn), x);
 }
 
-bool Board::determineIsSymmetric(const BoardState &state) {
-    // loop in reverse as most good moves will be near the center, meaning the edges will be most volatile
-    for (int i = SYMMETRIC_MID_COLUMN - 1; i >= BOARD_WIDTH % 2; --i) {
-        int leftShift = (SYMMETRIC_BOARD_WIDTH - BOARD_WIDTH % 2 + i) * 8;
-        int rightShift = (SYMMETRIC_MID_COLUMN - i) * 8;
-        BoardHash leftMask = EMPTY_COLUMN_BITS << leftShift;
-        BoardHash rightMask = EMPTY_COLUMN_BITS << rightShift;
+const BoardHash Board::getNextBoardHash(int x) const
+{
+    return calcBoardHash(boardHash, piece(!playerTurn), x);
+}
 
-        if (((state.openSpaces & leftMask) >> leftShift) != ((state.openSpaces & rightMask) >> rightShift) ||
-            ((state.pieces & leftMask) >> leftShift) != ((state.pieces & rightMask) >> rightShift)) {
-            return false;
+const uchar Board::calcSymmetry(const bool possiblySymmetric, const BoardState &state) {
+    if (!possiblySymmetric) {
+        return 0;
+    }
+
+    BoardPiecesBitField pbf = state.piecesBF;
+    BoardPiecesBitField osbf = state.openSpacesBF;
+    SymmetryBitField sbf(SYMMETRIC);
+
+    // loop in reverse as most good moves will be near the center, meaning the edges will be most volatile
+    for (int i = MAX_SYMMETRIC_COLUMN - 1; i >= BOARD_WIDTH % 2; --i) {
+        if (osbf.cols[i] == osbf.cols[MAX_COLUMN - i]) {
+            if (pbf.cols[i] != pbf.cols[MAX_COLUMN - 1]) {
+                return IMPOSSIBLY_SYMMETRIC;
+            }
+        }
+        else {
+            sbf.isSymmetric = false;
+            uchar colL = uchar(pbf.cols[i] & ~osbf.cols[i]);
+            uchar colR = uchar(pbf.cols[MAX_COLUMN - i] & ~osbf.cols[MAX_COLUMN - i]);
+
+            if (colL != colR) {
+                return IMPOSSIBLY_SYMMETRIC;
+            }
         }
     }
 
-    return true;
+    return sbf;
 }
 
-BoardHash Board::calcBoardHash(const BoardState &state) {
-    // hash function essentially stolen from 
-    // https://codereview.stackexchange.com/questions/171999/specializing-stdhash-for-stdarray
+const BoardHash Board::calcBoardHash(const BoardState &state) {
+    BoardPieces os = state.openSpaces ^ EMPTY_OPEN_SPACES_BITS;
+    uchar* openSpaces = (uchar*)(&os);
+    uchar* pieces = (uchar*)&state.pieces;
+    //return
+    //    (static_cast<BoardHash>(pieces[6]) << (BOARD_HEIGHT * 6)) |
+    //    (static_cast<BoardHash>(pieces[5]) << (BOARD_HEIGHT * 5)) |
+    //    (static_cast<BoardHash>(pieces[4]) << (BOARD_HEIGHT * 4)) |
+    //    (static_cast<BoardHash>(pieces[3]) << (BOARD_HEIGHT * 3)) |
+    //    (static_cast<BoardHash>(pieces[2]) << (BOARD_HEIGHT * 2)) |
+    //    (static_cast<BoardHash>(pieces[1]) << (BOARD_HEIGHT * 1)) |
+    //    static_cast<BoardHash>(pieces[0]) | 
+    //    (static_cast<BoardHash>(popCountByte(openSpaces[6])) << (COLUMN_HEIGHT_REQUIRED_BITS * 6) |
+    //     static_cast<BoardHash>(popCountByte(openSpaces[5])) << (COLUMN_HEIGHT_REQUIRED_BITS * 5) |
+    //     static_cast<BoardHash>(popCountByte(openSpaces[4])) << (COLUMN_HEIGHT_REQUIRED_BITS * 4) |
+    //     static_cast<BoardHash>(popCountByte(openSpaces[3])) << (COLUMN_HEIGHT_REQUIRED_BITS * 3) |
+    //     static_cast<BoardHash>(popCountByte(openSpaces[2])) << (COLUMN_HEIGHT_REQUIRED_BITS * 2) |
+    //     static_cast<BoardHash>(popCountByte(openSpaces[1])) << (COLUMN_HEIGHT_REQUIRED_BITS * 1) |
+    //     static_cast<BoardHash>(popCountByte(openSpaces[0]))) << BOARD_SIZE;
 
-    BoardHash result = 0;
-    for (int x = 0; x < BOARD_WIDTH; ++x) {
-        result = result * 0x1F + ((state.pieces & colMask(colIdx(x))) >> colIdx(x)) + ((~state.openSpaces & colMask(colIdx(x))) >> colIdx(x));
+    BoardHashBitField hashBF;
+    for (int i = 0; i < BOARD_WIDTH; ++i) {
+        hashBF.cols[i] = pieces[i];
+        hashBF.heights[i] = popCountByte(openSpaces[i]);
     }
 
-    return result;
+    return hashBF;
+}
+
+const BoardHash Board::calcBoardHash(const BoardHash prevHash, const piece playerTurn, const int x)
+{
+    const piece prevPlayerTurn(static_cast<piece>(!playerTurn));
+    const int colBitOffset = BOARD_HEIGHT * x;
+    const int heightBitOffset = BOARD_SIZE + 3 * x;
+    BoardHash next = prevHash + (0x1ll << heightBitOffset);
+    int prevColHeight = (prevHash >> (heightBitOffset)) & 0x7;
+    next |= static_cast<BoardHash>(prevPlayerTurn) << (colBitOffset + prevColHeight);
+
+    return next;
 }
 
 const Board Board::mirrorBoard() const {
-    if (isSymmetric) {
+    if (symmetryBF.isSymmetric) {
         return Board(*this);
     }
 
@@ -457,20 +332,60 @@ const Board Board::mirrorBoard() const {
         openSpaces += getCol(m_state.openSpaces, colIdx(x));
     }
 
-#ifdef ALWAYS_USE_HEURISTIC
-    assert(heuristic == calculateHeuristic({ pieces, openSpaces }));
-    return Board({ pieces, openSpaces }, playerTurn, isSymmetric, heuristic);
-#else
-    return Board({ pieces, openSpaces }, playerTurn, isSymmetric, gameOver, m_heuristic, m_calculatedHeuristic);
-#endif // ALWAYS_USE_HEURISTIC
+    assert(heuristic == calcHeuristic({ pieces, openSpaces }));
+    return Board(BoardState({ pieces, openSpaces }), playerTurn, symmetry, heuristic);
 }
 
-inline const int Board::getColHeight(const BoardPieces &openSpaces, const int x)
+const string Board::getBoardString() const
 {
-    unsigned long height;
-    if (!_BitScanForward64(&height, getCol(openSpaces, colIdx(x)))) {
-        return BOARD_HEIGHT;
+    return Board::getBoardString(m_state.pieces, m_state.openSpaces);
+}
+
+const string Board::getBoardString(BoardHash hash)
+{
+    Board b = Board::fromHash(hash);
+    return Board::getBoardString(b.m_state.pieces, b.m_state.openSpaces);
+}
+
+const string Board::getBoardString(const BoardPieces &pieces, const BoardPieces &openSpaces)
+{
+    string result(BOARD_SIZE * 2, ' ');
+
+    for (int y = 0; y < BOARD_HEIGHT; ++y) {
+        for (int x = 0; x < BOARD_WIDTH; ++x) {
+            char spacesCol = ((openSpaces & (EMPTY_COLUMN_BITS << (x << 3))) >> (x << 3)) ^ EMPTY_COLUMN_BITS;
+            char piecesCol = (pieces & (EMPTY_COLUMN_BITS << (x << 3))) >> (x << 3);
+
+            if (spacesCol & (1 << y)) {
+                if (piecesCol & (1 << y)) {
+                    result[(BOARD_WIDTH * (MAX_ROW - y) + x) * 2] = 'r';
+                }
+                else {
+                    result[(BOARD_WIDTH * (MAX_ROW - y) + x) * 2] = 'b';
+                }
+            }
+            else {
+                result[(BOARD_WIDTH * (MAX_ROW - y) + x) * 2] = '_';
+            }
+        }
+
+        result[BOARD_WIDTH * (y + 1) * 2 - 1] = '\n';
     }
 
-    return int(height);
+    return result;
 }
+
+inline bool connect4solver::operator==(const Board &lhs, const Board &rhs)
+{
+    return lhs.boardHash == rhs.boardHash &&
+        lhs.heuristic == rhs.heuristic &&
+        lhs.symmetry == rhs.symmetry &&
+        lhs.playerTurn == rhs.playerTurn;
+}
+
+inline bool connect4solver::operator!=(const Board &lhs, const Board &rhs)
+{
+    return !(lhs == rhs);
+}
+
+#pragma endregion

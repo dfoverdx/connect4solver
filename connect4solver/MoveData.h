@@ -1,51 +1,52 @@
 #pragma once
-#include <atomic>
-#include <memory>
+#include <bitfield.h>
 #include "Constants.h"
+#include "Constants.MoveData.h"
 #include "Piece.h"
-#include "RedHashes.h"
+
+#if USE_SMART_POINTERS
+#include <memory>
+#endif
+
+#if ENABLE_THREADING
+#include <atomic>
+#endif
 
 namespace connect4solver {
 
-    class MoveData;
-    typedef std::shared_ptr<MoveData> MovePtr;
-
-    class BlackMoveData;
-    typedef std::shared_ptr<BlackMoveData> BlackMovePtr;
-
-    class RedMoveData;
-    typedef std::shared_ptr<RedMoveData> RedMovePtr;
-    typedef std::unique_ptr<BoardHash[]> NextHashArrayPtr;
-
+#if PACK_MOVE_DATA
 #pragma pack(push, 1)
+#endif
 
     class MoveData
     {
+    private:
+        MoveData(const MoveData &md);
+        MoveData(const MoveDataBase data);
+        static const MoveData createBlackLost(MoveDataInternal data);
+
+#if !BF
+        // Helper functions
+        inline static const bool maskEquals(const MoveDataBase data, const MoveDataBase mask);
+        inline const bool maskEquals(const MoveDataBase mask) const;
+#endif // !BF
+
     protected:
         /*
             bitmask:
-                0-6:   # moves to win
-                7-11:  # of references to this move
-                12-14: worker thread id
-                15:    is finished
-                16:    is symmetric
+                0-5:    # moves to win
+                6:      is symmetric flag
+                7:      is finished flag
+                8-10:   # of references to this move
+                11-14:  worker thread id
+                15:  unused
         */
-        std::atomic<ushort> m_data;
+        MoveDataInternal m_data;
 
     public:
         // used when initializing array
         MoveData();
         MoveData(const bool isSymmetric);
-
-        // returns true if the thread successfully acquired access to the move data,
-        // else false (either the move has already been finished or another thread got to it first
-        const bool acquire(const int threadId);
-
-        // sets the threadId back to default value without setting the finished bit
-        // used when another thread's resultant move makes this move unnecessary
-        void releaseWithoutFinish();
-
-        //void setIsFinished(const bool isFinished);
 
         // sets isFinished = true, threadId = THREAD_ID_MASK (no thread), and movesToWin
         void finish(const int movesTilWin);
@@ -57,7 +58,22 @@ namespace connect4solver {
         const int getRefCount() const;
         const bool getIsFinished() const;
         const bool getIsSymmetric() const;
+        const bool getBlackLost() const;
+
+        static void setBlackLost(MovePtr* mptr);
+
+#if ENABLE_THREADING
+        // returns true if the thread successfully acquired access to the move data,
+        // else false (either the move has already been finished or another thread got to it first
+        const bool acquire(const int threadId);
+
+        // sets the threadId back to default value without setting the finished bit
+        // used when another thread's resultant move makes this move unnecessary
+        void releaseWithoutFinish();
+
         const int getWorkerThread() const;
+#endif
+
     };
 
     class BlackMoveData : public MoveData {
@@ -74,22 +90,28 @@ namespace connect4solver {
 
     class RedMoveData : public MoveData {
     private:
-        uchar m_hashesUsed;
+#if USE_DYNAMIC_SIZE_RED_NEXT
         NextHashArrayPtr m_next;
+#else
+        BoardHash m_next[BOARD_WIDTH];
+#endif
 
     public:
         RedMoveData();
         RedMoveData(const bool isSymmetric);
 
-        void setNextHash(const uint x, const BoardHash hash);
-        const RedHashes getNextHashes() const;
+#if !USE_SMART_POINTERS & USE_DYNAMIC_SIZE_RED_NEXT
+        ~RedMoveData();
+#endif
 
-        // minor memory optimization, saving only the hashes used after the move has been finished
-        // called during garbage collection
-        // returns the number of empty hashes removed
-        const int condense();
+        static void setBlackLost(RedMovePtr* ptr);
+
+        void setNextHash(const int x, const BoardHash hash);
+        const BoardHash* getNextHashes(int &size) const;
     };
 
+#if PACK_MOVE_DATA
 #pragma pack(pop)
+#endif
 
 }

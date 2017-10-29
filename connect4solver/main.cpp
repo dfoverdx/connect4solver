@@ -1,9 +1,12 @@
+#define _WIN32_WINNT 0x0500
+
 #include <iostream>
 #include <conio.h>
 #include <windows.h>
 #include <time.h>
 #include <stack>
 #include <queue>
+#include "StaticAssertions.h"
 #include "Board.h"
 #include "piece.h"
 #include "searchTree.h"
@@ -20,6 +23,16 @@ using namespace connect4solver;
 //const char ESCAPE = (char)27;
 
 int main() {
+    HWND console = GetConsoleWindow();
+    HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
+    RECT r;
+    GetWindowRect(console, &r);
+
+    CONSOLE_CURSOR_INFO cursorInfo;
+    GetConsoleCursorInfo(out, &cursorInfo);
+    cursorInfo.bVisible = false;
+    SetConsoleCursorInfo(out, &cursorInfo);
+
     SearchTree::run();
     return 0;
     //

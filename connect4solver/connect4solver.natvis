@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?> 
 <AutoVisualizer xmlns="http://schemas.microsoft.com/vstudio/debugger/natvis/2010">
-    <!--<Type Name="connect4solver::Board">
-        <DisplayString>TestFoo {this}</DisplayString>
+    <!--<Type Name="connect4solver::MoveData">
+        <DisplayString>{{ this }}</DisplayString>
+        <Expand>
+            <Item Name="[is symmetric]">foo</Item>
+        </Expand>
     </Type>-->
 </AutoVisualizer>

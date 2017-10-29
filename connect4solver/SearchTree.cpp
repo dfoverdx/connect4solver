@@ -1,626 +1,904 @@
 #include <array>
-#include <atomic>
-#include <cassert>
-#include <chrono>
-#include <condition_variable>
 #include <conio.h>
 #include <iomanip>
 #include <iostream>
-#include <memory>
-#include <mutex>
-#include <queue>
-#include <thread>
-#include <unordered_set>
-#include <time.h>
-#include <Windows.h>
-#include <Psapi.h> // must go after Windows.h for some reason
-#include "MoveData.h"
+#include <string>
+#include <type_traits>
+#include "Constants.Board.h"
+#include "NextMoveDescriptor.h"
 #include "SearchTree.h"
-
-#ifdef ALWAYS_USE_HEURISTIC
 #include "SortingNetwork.h"
-#endif
 
-#ifdef MAP
+//#pragma push_macro("NDEBUG")
+//#undef NDEBUG
+#include <cassert>
+//#pragma pop_macro("NDEBUG")
 #include <map>
-#else
-#include <unordered_map>
-#endif
 
 using namespace std;
-using namespace connect4solver;
 using namespace std::chrono;
 using namespace std::chrono_literals;
+using namespace connect4solver;
 
-#define cout std::cout
+#define stats status.stats
+#define gc status.gc
 
-#ifdef ALWAYS_USE_HEURISTIC
-#define gg(board) (board).getGameOver()
-#define heur(board) (board).heuristic
-#else
-#define gg(board) (board).gameOver
-#define heur(board) (board).getHeuristic()
-#endif 
+#pragma region Function declarations
+template <class MM>
+inline void sortHeuristics(MM &mManager, const bool isSymmetric) {
+    static_fail("Should not have accessed generic sortHeuristic()");
+};
 
-#ifdef MAP
-#define cacheMap map
-#else
-#define cacheMap unordered_map
-#endif
-
-typedef cacheMap<BoardHash, BlackMovePtr> BlackCache;
-typedef cacheMap<BoardHash, RedMovePtr> RedCache;
-typedef unique_lock<mutex> uLock;
-typedef BlackCache::iterator BlackCacheIt;
-typedef RedCache::iterator RedCacheIt;
-
-int searchBlack(const int depth, const uint threadId, const int parentThreadDepth, const Board &board, double progress, 
-                const double progressChunk, BlackMovePtr &curMovePtr);
-int searchRed(const int depth, const uint threadId, const int parentThreadDepth, const Board &board, double progress, 
-              const double progressChunk, RedMovePtr &curMovePtr);
-inline void decRedMoveRefCounts(const RedMovePtr &curMovePtr, BlackCache &nextMoves);
+#if ET
 
 template <typename TData>
-inline bool acquireMove(int &nextBoardIdx, shared_ptr<TData>* &outMove, const uint threadId, const int actualDepth,
+inline bool acquireMove(int &outBoardIdx, TDataPtr* &outMove, const uint threadId, const int depth,
     const int parentThreadDepth, const Board &curBoard, const Board(&nextBoards)[BOARD_WIDTH],
-    cacheMap<BoardHash, shared_ptr<TData>> &cache, const int maxBoards, const array<int, BOARD_WIDTH> &moveIndicies);
+    MoveCache &cache, const int maxBoards, const array<int, BOARD_WIDTH> &moveIndicies);
 
 template <typename TData>
-inline bool shortCircuit(shared_ptr<TData>) {
+inline bool shortCircuit(TDataPtr*) {
     throw exception("Somehow tried to call shortCircuit() with something other than a move pointer");
 }
 
 template <>
-inline bool shortCircuit(BlackMovePtr ptr) {
-    return ptr == nullptr;
+inline bool shortCircuit(BlackMovePtr* ptr) {
+    return (*ptr)->getBlackLost();
 }
 
 template <>
-inline bool shortCircuit(RedMovePtr ptr) {
-    return ptr != nullptr && ptr->getMovesToWin() == 2;
+inline bool shortCircuit(RedMovePtr* ptr) {
+    return (*ptr)->getMovesToWin() == 1;
 }
 
-template<typename TPtr>
-inline void finishMove(int depth, int movesTilWin, TPtr* curMovePtr);
+void searchThreaded(const int depth, const Board &board, MoveManager &bmm, double progress,
+    const double nextProgressChunk, const Board(&nextBoards)[BOARD_WIDTH], MoveCache &cache, const int maxBoards,
+    const array<int, BOARD_WIDTH> &moveIndicies);
 
-inline void printProgress(const uint threadId, const Heuristic heuristic);
-inline void printTime(const double progress);
+#endif // ENABLE_THREADING
 
-#define setBlackLost(curMovePtr) curMovePtr = nullptr; return BLACK_LOST
-#define setProgress(progress) threadProgress[parentThreadDepth == -1 ? threadId : 2] = progress
+#pragma endregion
 
-size_t garbageCollect();
-inline void manageMemory();
-void setMaxMemoryToUse();
+#pragma region Variable declarations
+constexpr int PARENT_THREAD_ID = MAX_THREADS - 1;
 
-const clock_t begin_time = clock();
-
-struct CacheStats {
-    ull hits;
-    ull misses;
-};
-
-CacheStats cacheStats = CacheStats();
-atomic<ull> tmpBoardsEvaluated = 0;
-atomic<ull> boardsEvaluated = 0;
-atomic<ull> movesAddedSinceLastGC = 0;
+clock_t lastMemoryCheck;
 ull movesAllowedToBeAddedAfterGarbageCollection = 0;
-ull totalGarbageCollected = 0;
 MEMORYSTATUSEX memInfo;
-tinyint cacheFullAt = -1;
 HANDLE hProcess = GetCurrentProcess();
-PROCESS_MEMORY_COUNTERS pmc;
-size_t maxMemoryToUse;
 
-Board blackBoards[MAX_THREADS][MAX_MOVE_DEPTH / 2][BOARD_WIDTH];
-Board redBoards[MAX_THREADS][MAX_MOVE_DEPTH / 2][BOARD_WIDTH];
-BlackCache blackMoves[MAX_MOVE_DEPTH / 2];
-RedCache redMoves[MAX_MOVE_DEPTH / 2];
-mutex cacheLocks[MAX_MOVE_DEPTH];
-condition_variable moveCVs[MAX_MOVE_DEPTH];
-mutex ioLock;
+atomic<bool> checkMemory(false);
+thread checkMemoryThread;
 
-atomic<bool> threadDepthFinished[MAX_MOVE_DEPTH * 2];
+thread printStatusThread;
 
-array<array<tinyint, BOARD_SIZE>, MAX_THREADS> currentMoveRoute;
-double threadProgress[MAX_THREADS + 1];
+#if ET
+Board allBoards[MAX_THREADS][MAX_MOVE_DEPTH][BOARD_WIDTH];
+atomic<bool> threadDepthFinished[MAX_MOVE_DEPTH];
+#else // ET
+Board boards[MAX_MOVE_DEPTH][BOARD_WIDTH];
+#endif // ET
 
-#ifdef ALWAYS_USE_HEURISTIC
-const array<int, BOARD_WIDTH> MOVE_INDICES = { 0, 1, 2, 3, 4, 5, 6 };
-#else
-const array<int, BOARD_WIDTH> MOVE_INDICES = { 3, 2, 1, 0, 4, 5, 6 };
-#endif
+#if !USE_SMART_GC
+#ifdef NDEBUG
+queue<BoardHash> hashesToDelete;
+#else // NDEBUG
+queue<BoardHash> hashesToDelete;
+#endif // NDEBUG
+#endif // !USE_SMART_GC
 
+#pragma endregion
+
+#pragma region SearchTree member definitions
+
+SearchTree::SearchTreeStatus SearchTree::status;
+
+SearchTree::CacheAndLocks SearchTree::cal;
 void SearchTree::run()
 {
-    memInfo.dwLength = sizeof(MEMORYSTATUSEX);
-    setMaxMemoryToUse();
+#if ET
+    // set all threads to available
+    threadsAvailable.flip();
 
-    for (int i = 0; i < MAX_MOVE_DEPTH / 2; ++i) {
-        blackMoves[i] = BlackCache();
-        redMoves[i] = RedCache();
-        threadDepthFinished[i * 2] = false;
-        threadDepthFinished[i * 2 + 1] = false;
+    for (int i = 0; i < MAX_MOVE_DEPTH; ++i) {
+        threadDepthFinished[i] = false;
+    }
+
+    for (int i = 0; i < MAX_THREADS; ++i) {
+        threadProgress[i] = 0.0;
     }
 
     for (int i = 0; i < BOARD_SIZE; ++i) {
         for (int j = 0; j < MAX_THREADS; ++j) {
-            currentMoveRoute[j][i] = -1;
+            allCurrentMoveRoutes[j][i] = -1;
         }
     }
-
-    for (int i = 0; i <= MAX_THREADS; ++i) {
-        threadProgress[i] = 0.0;
+#else
+    for (int i = 0; i < BOARD_SIZE; ++i) {
+        status.currentMoveRoute[i] = -1;
     }
+#endif
+
+    assert(!cal.manageMemoryLock.test_and_set());
+    memInfo.dwLength = sizeof(MEMORYSTATUSEX);
+    setMaxMemoryToUse();
+    cal.manageMemoryLock.clear();
+
+    printStatusThread = thread(printStatus);
+    checkMemoryThread = thread(setCheckMemoryAtInterval);
 
     Board b = Board().addPiece(3);
 
     int maxDepthRequired = 0;
     RedMovePtr dummy = RedMovePtr(new RedMoveData(true));
+
+#if ET
     if (!dummy->acquire(0)) {
         throw exception("could not acquire first move.....?");
     }
+#endif
 
-    int depthRequired = searchRed(0, 0, -1, b, 0, 1.0, dummy);
-    if (depthRequired == BLACK_LOST) {
-        cout << "Somehow root depth found black lost\n";
-    }
-    else {
-        cout << depthRequired << "\n";
-    }
+    lastMemoryCheck = clock();
+    search<RedMovePtr>(0, PARENT_THREAD_ID, b, 0, 1.0, dummy);
 }
 
-// returns moves til win:
-//   -1: thread was interupted and move was left unfinished
-//   0 to BLACK_LOST - 1: finished search and black wins
-//   BLACK_LOST: finished search and either red wins or it's a cats game
-int searchBlack(const int depth, const uint threadId, const int parentThreadDepth, const Board &board, double progress, 
-                const double progressChunk, BlackMovePtr &curMovePtr) {
-    assert(depth < MAX_MOVE_DEPTH);
+// enumerate board hashes
+// check if they've already been calculated
+// if not, generate the board and add it to our MoveManager
+template<typename CurMPtr, class MM>
+inline bool SearchTree::enumerateBoards(const int depth, const int maxBoards, const Board &board, MM &mManager,
+    Board(&nextBoards)[BOARD_WIDTH], int &invalidMoves, int &finishedMoves) {
+    typedef conditional<is_same<CurMPtr, BlackMovePtr>::value, RedMovePtr, BlackMovePtr>::type NextMPtr;
 
-    const int depthIdx = depth / 2;
     const int nextDepth = depth + 1;
-    const int nextDepthIdx = depth / 2 + 1;
-    const int maxBoards = board.isSymmetric ? SYMMETRIC_BOARD_WIDTH : BOARD_WIDTH;
-    const double nextProgressChunk = progressChunk / maxBoards;
-    Board (&nextBoards)[BOARD_WIDTH] = redBoards[threadId][nextDepthIdx];
-    RedCache &nextMoves = redMoves[nextDepthIdx];
+    MoveCache &nextCache = cal.moveCache[nextDepth];
 
-    assert(curMovePtr != nullptr);
-    assert(!curMovePtr->getIsFinished());
-    assert(curMovePtr->getWorkerThread() == threadId);
+    const Heuristic DONT_RECALCULATE_HEURISTIC = (depth % 2 == 0) ? BLACK_WON_HEURISTIC : CATS_GAME_HEURISTIC;
+    bool canEndOnCompletion = false;
 
-    setProgress(progress);
-
-    // if this is the max depth, check all next possible boards
-    // if winning board found, finish this move and return
-    if (nextDepth >= MAX_MOVE_DEPTH) {
-        for (int i = 0; i < maxBoards; ++i) {
-            if (!board.isValidMove(i)) {
-                continue;
-            }
-
-            Board lastBoard = board.addPiece(i);
-            if (gg(lastBoard) == gameOverState::blackWon) {
-                curMovePtr->setNextHash(lastBoard.boardHash);
-                curMovePtr->finish(0);
-                return 0;
-            }
-            else {
-                continue;
-            }
-        }
-
-        setBlackLost(curMovePtr);
-    }
-
-    int movesTilWin = BLACK_LOST;
-    int bestMove = -1;
-    BoardHash bestHash = 0;
-    int newBoards = 0;
-    int movesFinished = 0;
-    Board* next = nullptr;
-
-    array<Heuristic, BOARD_WIDTH> heuristics;
-    array<int, BOARD_WIDTH> indicies = MOVE_INDICES;
-
-    // enumerate boards
-    // if winning board found, finish this move and return movesTilWin = 0
+    ettgc(lGuard(cal.moveCacheLocks[nextDepth]));
+    sgc(ettgc(lGuard(cal.garbageLocks[nextDepth])));
     for (int i = 0; i < maxBoards; ++i) {
         if (!board.isValidMove(i)) {
-            heuristics[i] = BLACK_LOST_HEURISTIC;
+            ++invalidMoves;
+            mManager[i] = { i, 0, DONT_RECALCULATE_HEURISTIC, nullptr };
             continue;
         }
 
-        next = &nextBoards[i];
-        *next = board.addPiece(i);
-        ++tmpBoardsEvaluated;
+        BoardHash nextHash = board.getNextBoardHash(i);
+        mManager[i].col = i;
+        mManager[i].hash = nextHash;
 
-        switch (gg(*next)) {
-        case gameOverState::blackLost:
-        case gameOverState::unfinished:
-            heuristics[i] = heur(*next);
-            continue;
+        auto it = nextCache.find(nextHash);
+        if (it != nextCache.end()) {
+            ++stats.cacheHits;
 
-        case gameOverState::blackWon:
-            finishMove(depth, 0, &curMovePtr);
-            return 0;
-        }
-    }
-
-    RedMovePtr* localMoves[BOARD_WIDTH];
-    int localMovesCounter = 0;
-
-    // search for moves in the cache
-    // if not found, add them
-    {
-        lock_guard<mutex> lk(cacheLocks[nextDepth]);
-        for (int i = 0; i < maxBoards; ++i)
-        {
-            if (!board.isValidMove(i)) {
-                ++movesFinished;
-                continue;
+#if USE_SMART_GC
+            if (it->second->incRefCount() == 1) {
+                bool removed = cal.garbage[nextDepth].erase(nextHash) != 0;
+                assert(removed);
             }
+#else // USE_SMART_GC
+            it->second->incRefCount();
+#endif // USE_SMART_GC
 
-            next = &nextBoards[i];
-            RedCacheIt it = nextMoves.find(next->boardHash);
-            if (it == nextMoves.end()) {
-                ++cacheStats.misses;
-                ++movesAddedSinceLastGC;
-                localMoves[localMovesCounter] = new RedMovePtr(new RedMoveData(next->isSymmetric));
-                nextMoves[next->boardHash] = *localMoves[localMovesCounter];
-                ++localMovesCounter;
-            }
-            else {
-                ++cacheStats.hits;
-                if (it->second == nullptr) {
-                    // black lost
+            mManager[i].move = rpc(NextMPtr*, &it->second);
+
+            if (it->second->getIsFinished()) {
+                ++finishedMoves;
+                mManager[i].heur = DONT_RECALCULATE_HEURISTIC;
+
+                switch (doMoveEvaluation(mManager, i)) {
+                case continueEval::finished:
+                    return true;
+
+                case continueEval::finishedAfterCheckingNewBoards:
+                    // still have to finish enumerating new boards if there are any
+                    canEndOnCompletion = true;
+                    continue;
+
+                case continueEval::unfinishedEval:
                     continue;
                 }
-
-                if (it->second->getIsFinished()) {
-                    ++movesFinished;
-                    int mtw = it->second->getMovesToWin() + 1;
-                    if (mtw < movesTilWin) {
-                        if (bestMove != -1) {
-                            RedMovePtr lastPtr = nextMoves[bestHash];
-                            if (lastPtr != nullptr) {
-                                lastPtr->decRefCount();
-                            }
-                        }
-
-                        // short-circuit if black can force a win with its next move
-                        if (mtw == 2) {
-                            curMovePtr->setNextHash(bestHash);
-                            finishMove(depth, 2, &curMovePtr);
-
-                            for (int j = 0; j < localMovesCounter; ++j) {
-                                (*localMoves[j])->decRefCount();
-                                localMoves[j]->reset();
-                            }
-
-                            return 2;
-                        }
-
-                        bestMove = i;
-                        bestHash = next->boardHash;
-                        movesTilWin = mtw;
-                        it->second->incRefCount();
-                    }
-                }
-            }
-        }
-    }
-
-    for (int i = 0; i < localMovesCounter; ++i) {
-        localMoves[i]->reset();
-        localMoves[i] = nullptr;
-    }
-
-    localMovesCounter = 0;
-
-    // all moves have been previously evaluated
-    if (movesFinished == maxBoards) {
-        if (movesTilWin == BLACK_LOST) {
-            setBlackLost(curMovePtr);
-        }
-
-        assert(bestMove != -1);
-        finishMove(depth, movesTilWin, &curMovePtr);
-        return movesTilWin;
-    }
-
-    if (maxBoards == BOARD_WIDTH) {
-        SortingNetwork::Sort7Reverse(heuristics, indicies);
-    }
-    else {
-        SortingNetwork::Sort4Reverse(heuristics, indicies);
-    }
-
-    progress += nextProgressChunk * movesFinished;
-    setProgress(progress);
-
-    RedMovePtr* nextMovePtr = nullptr;
-    int nextBoardIdx;
-    
-    // get move to work on
-    while (acquireMove(nextBoardIdx, nextMovePtr, threadId, depth, parentThreadDepth, board, nextBoards, nextMoves, 
-                       maxBoards, indicies)) { 
-        assert(nextMovePtr != nullptr && *nextMovePtr != nullptr);
-
-        Board &next = nextBoards[nextBoardIdx];
-        currentMoveRoute[threadId][depth] = nextBoardIdx;
-        int tmpMovesTilWin = searchRed(nextDepth, threadId, parentThreadDepth, next, progress, nextProgressChunk, *nextMovePtr);
-        currentMoveRoute[threadId][depth] = -1;
-
-        if (tmpMovesTilWin != BLACK_LOST) {
-            ++tmpMovesTilWin;
-            if (tmpMovesTilWin < movesTilWin) {
-                if (bestMove != -1) {
-                    localMoves[localMovesCounter] = &nextMoves[bestHash];
-                    ++localMovesCounter;
-                }
-
-                movesTilWin = tmpMovesTilWin;
-                bestMove = nextBoardIdx;
-                bestHash = next.boardHash;
-            }
-            else {
-                localMoves[localMovesCounter] = nextMovePtr;
-                ++localMovesCounter;
-            }
-
-            // short-circuit if black can force a win with its next move
-            if (movesTilWin == 2) {
-                for (int i = 0; i < localMovesCounter; ++i) {
-                    (*localMoves[i])->decRefCount();
-                    localMoves[i]->reset();
-                }
-
-                curMovePtr->setNextHash(bestHash);
-                finishMove(depth, 2, &curMovePtr);
-                return 2;
             }
         }
         else {
-            assert(*nextMovePtr == nullptr);
+            ++stats.cacheMisses;
         }
 
-        progress += nextProgressChunk;
-        setProgress(progress);
+        if (mManager[i].heur == 0) {
+            Board &nextBoard = nextBoards[i] = board.addPiece(i);
+            assert(nextBoard.boardHash == nextHash);
+
+            if (mManager[i].move == nullptr) {
+                ++status.movesAddedSinceLastGC;
+            }
+
+            mManager.addMove(i, nextBoard);
+            if (doHeuristicEvaluation(mManager, nextBoard, i, finishedMoves)) {
+                return true;
+            }
+        }
     }
 
-    if (nextBoardIdx == -1) {
-        // thread was aborted because parent thread was notified
-        assert(nextMovePtr == nullptr);
-        curMovePtr->releaseWithoutFinish();
-        return -1;
+    return canEndOnCompletion;
+}
+
+template <>
+inline static SearchTree::continueEval SearchTree::doMoveEvaluation<BlackMoveManager>(BlackMoveManager &mManager, const int i) {
+    RedMovePtr* mv = mManager[i].move;
+    assert((*mv)->getIsFinished());
+
+    if ((*mv)->getBlackLost()) {
+        return continueEval::unfinishedEval;
     }
 
-    manageMemory();
-
-    if (depth <= DEPTH_TO_PRINT_PROGRESS) {
-        printProgress(threadId, board.heuristic);
+    int mtw = (*mv)->getMovesToWin() + 1;
+    if (mtw < mManager.movesToWin) {
+        mManager.bestMove = mManager[i].col;
+        mManager.movesToWin = mtw;
     }
 
-    if (bestMove == -1) {
-        assert(localMovesCounter == 0);
-        setBlackLost(curMovePtr);
+    return mtw == 2 ? continueEval::finishedAfterCheckingNewBoards : continueEval::unfinishedEval;
+}
+
+template <>
+inline static SearchTree::continueEval SearchTree::doMoveEvaluation<RedMoveManager>(RedMoveManager &mManager, const int i) {
+    BlackMovePtr* mv = mManager[i].move;
+    assert((*mv)->getIsFinished());
+
+    if ((*mv)->getBlackLost()) {
+        mManager.movesToWin = BLACK_LOST;
+        return continueEval::finished;
     }
 
-    for (int i = 0; i < localMovesCounter; ++i) {
-        (*localMoves[i])->decRefCount();
-        localMoves[i]->reset();
+    int mtw = (*mv)->getMovesToWin() + 1;
+    if (mtw > mManager.movesToWin) {
+        mManager.movesToWin = mtw;
     }
 
-    curMovePtr->setNextHash(bestHash);
-    curMovePtr->finish(movesTilWin);
+    return continueEval::unfinishedEval;
+}
 
-    return movesTilWin;
+template<>
+inline static bool SearchTree::doHeuristicEvaluation<BlackMoveManager>(BlackMoveManager &mManager, const Board& board, const int i, int &finishedMoves) {
+    switch (board.getGameOver()) {
+    case gameOverState::blackLost:
+        mManager[i].heur = board.heuristic;
+        ++finishedMoves;
+        return false;
+
+    case gameOverState::unfinished:
+        mManager[i].heur = board.heuristic;
+        return false;
+
+    case gameOverState::blackWon:
+        mManager.bestMove = i;
+        mManager.movesToWin = 0;
+        return true;
+
+    default:
+        throw exception("Somehow returned an invalid gameOverState");
+    }
+}
+
+template<>
+inline static bool SearchTree::doHeuristicEvaluation<RedMoveManager>(RedMoveManager &mManager, const Board& board, const int i, int &finishedMoves) {
+    switch (board.getGameOver()) {
+    case gameOverState::blackWon:
+        mManager[i].heur = board.heuristic;
+        ++finishedMoves;
+        return false;
+
+    case gameOverState::unfinished:
+        mManager[i].heur = board.heuristic;
+        return false;
+
+    case gameOverState::blackLost:
+        mManager.movesToWin = BLACK_LOST;
+        return true;
+
+    default:
+        throw exception("Somehow returned an invalid gameOverState");
+    }
+}
+
+template <>
+inline bool SearchTree::doSearchLast<RedMovePtr>(const int depth, const Board &board, RedMovePtr &curMovePtr) {
+    assert(depth < LAST_MOVE_DEPTH);
+    return false;
+}
+
+template <>
+inline bool SearchTree::doSearchLast<BlackMovePtr>(const int depth, const Board &board, BlackMovePtr &curMovePtr) {
+    assert(depth < MAX_MOVE_DEPTH);
+    if (depth == LAST_MOVE_DEPTH) {
+        searchLast(board, curMovePtr);
+        return true;
+    }
+
+    return false;
 }
 
 // returns moves til win:
-//   -1: thread was interupted and move was left unfinished
-//   0 to BLACK_LOST - 1: finished search and black wins
-//   BLACK_LOST: finished search and either red wins or it's a cats game
-int searchRed(const int depth, const uint threadId, const int parentThreadDepth, const Board &board, double progress,
-              const double progressChunk, RedMovePtr &curMovePtr) {
-    const int depthIdx = depth / 2;
+//   true: move finished
+//   false: move processing was interrupted by parent thread short-circuiting
+template<typename CurMPtr>
+inline bool SearchTree::search(const int depth, const uint threadId, const Board &board, double progress, const double progressChunk, CurMPtr &curMovePtr)
+{
+    constexpr bool isRedTurn = is_same<CurMPtr, RedMovePtr>::value;
     const int nextDepth = depth + 1;
-    const int nextDepthIdx = depth / 2; // don't increment depth idx into black board array
-    const int maxBoards = board.isSymmetric ? SYMMETRIC_BOARD_WIDTH : BOARD_WIDTH;
-    const double nextProgressChunk = progressChunk / maxBoards;
-    Board(&nextBoards)[BOARD_WIDTH] = blackBoards[threadId][nextDepthIdx];
-    BlackCache &nextMoves = blackMoves[nextDepthIdx];
 
-    assert(curMovePtr != nullptr);
-    assert(!curMovePtr->getIsFinished());
-    assert(curMovePtr->getWorkerThread() == threadId);
-
-    setProgress(progress);
-
-    int movesTilWin = 0;
-    BoardHash bestHash = 0;
-    int newBoards = 0;
-    int movesFinished = 0;
-    Board* next = nullptr;
-
-    array<Heuristic, BOARD_WIDTH> heuristics;
-    array<int, BOARD_WIDTH> indicies = MOVE_INDICES;
-
-    // enumerate boards
-    // if losing board found, set black lost
-    for (int i = 0; i < maxBoards; ++i) {
-        if (!board.isValidMove(i)) {
-            heuristics[i] = BLACK_WON_HEURISTIC;
-            continue;
-        }
-
-        next = &nextBoards[i];
-        *next = board.addPiece(i);
-        ++tmpBoardsEvaluated;
-
-        switch (gg(*next)) {
-        case gameOverState::blackWon:
-        case gameOverState::unfinished:
-            heuristics[i] = heur(*next);
-            continue;
-
-        case gameOverState::blackLost:
-            decRedMoveRefCounts(curMovePtr, nextMoves);
-            setBlackLost(curMovePtr);
-        }
-    }
-
-    // search for moves in the cache
-    // if not found, add them
-    {
-        lock_guard<mutex> lk(cacheLocks[nextDepth]);
-        for (int i = 0; i < maxBoards; ++i)
-        {
-            if (!board.isValidMove(i)) {
-                ++movesFinished;
-                continue;
-            }
-
-            next = &nextBoards[i];
-            curMovePtr->setNextHash(i, next->boardHash);
-            BlackCacheIt it = nextMoves.find(next->boardHash);
-            if (it == nextMoves.end()) {
-                ++cacheStats.misses;
-                ++movesAddedSinceLastGC;
-                nextMoves[next->boardHash] = BlackMovePtr(new BlackMoveData(next->isSymmetric));
-            }
-            else {
-                ++cacheStats.hits;
-                if (it->second == nullptr) {
-                    decRedMoveRefCounts(curMovePtr, nextMoves);
-                    setBlackLost(curMovePtr);
-                }
-
-                it->second->incRefCount();
-
-                if (it->second->getIsFinished()) {
-                    ++movesFinished;
-
-                    int mtw = it->second->getMovesToWin() + 1;
-                    movesTilWin = max(mtw, movesTilWin);
-                }
-            }
-        }
-    }
-
-    // all moves have been previously evaluated
-    if (movesFinished == maxBoards) {
-        assert(movesTilWin > 0);
-        finishMove(depth, movesTilWin, &curMovePtr);
-        return movesTilWin;
-    }
-
-    if (maxBoards == BOARD_WIDTH) {
-        SortingNetwork::Sort7(heuristics, indicies);
+    if (isRedTurn) {
+        assert(depth % 2 == 0);
     }
     else {
-        SortingNetwork::Sort4(heuristics, indicies);
+        assert(depth % 2 == 1);
     }
 
-    progress += nextProgressChunk * movesFinished;
+    ++status.movesEvaluated;
+
+    if (doSearchLast(depth, board, curMovePtr)) {
+        return true;
+    }
+
+    manageMemory(depth);
+
+    typedef conditional<isRedTurn, BlackMovePtr, RedMovePtr>::type NextMPtr;
+    typedef conditional<isRedTurn, RedMoveManager, BlackMoveManager>::type MM;
+    assert(curMovePtr != nullptr);
+    assert(!curMovePtr->getIsFinished());
+    etassert(curMovePtr->getWorkerThread() == threadId);
+
+    LowestDepthManager ldm{ depth };
+    const int maxBoards = board.symmetryBF.isSymmetric ? SYMMETRIC_BOARD_WIDTH : BOARD_WIDTH;
+    Board(&nextBoards)[BOARD_WIDTH] = boards[nextDepth];
+    MoveCache &nextCache = cal.moveCache[nextDepth];
+
+    if (board.symmetryBF.isSymmetric) {
+        ++stats.symmetricBoards;
+    }
+    else if (board.symmetryBF.possiblySymmetric) {
+        ++stats.possiblySymmetricBoards;
+    }
+    else {
+        ++stats.asymmetricBoards;
+    }
+
     setProgress(progress);
 
-    BlackMovePtr* nextMovePtr = nullptr;
-    int nextBoardIdx;
+    int finishedMoves = 0;
+    int invalidMoves = 0;
+    MM mManager(depth, board, &curMovePtr);
+    double tmpOld;
+    double tmpNew;
 
-    // get move to work on
-    while (acquireMove(nextBoardIdx, nextMovePtr, threadId, depth, parentThreadDepth, board, nextBoards, nextMoves,
-                       maxBoards, indicies)) {
-        assert(nextMovePtr != nullptr && *nextMovePtr != nullptr);
-
-        Board &next = nextBoards[nextBoardIdx];
-        currentMoveRoute[threadId][depth] = nextBoardIdx;
-        int tmpMovesTilWin = searchBlack(nextDepth, threadId, parentThreadDepth, next, progress, nextProgressChunk, *nextMovePtr);
-        currentMoveRoute[threadId][depth] = -1;
-
-        if (tmpMovesTilWin == BLACK_LOST) {
-            decRedMoveRefCounts(curMovePtr, nextMoves);
-            setBlackLost(curMovePtr);
+    if (enumerateBoards<CurMPtr, MM>(depth, maxBoards, board, mManager, nextBoards, invalidMoves, finishedMoves)) {
+        if (isRedTurn) {
+            assert(mManager.movesToWin == BLACK_LOST);
+        }
+        else {
+            assert(mManager.movesToWin == 0 || mManager.movesToWin == 2);
         }
 
-        ++tmpMovesTilWin;
-        movesTilWin = max(tmpMovesTilWin, movesTilWin);
+        do {
+            tmpOld = status.progressSaved;
+            tmpNew = tmpOld + progressChunk;
+        } while (!status.progressSaved.compare_exchange_strong(tmpOld, tmpNew));
+
+        return true;
+    }
+
+    const int newBoards = maxBoards - finishedMoves - invalidMoves;
+
+    if (depth < DEPTH_COUNTS_TO_TRACK) {
+        status.maxMovesAtDepth[depth] = newBoards;
+        status.movesFinishedAtDepth[depth] = 0;
+
+        //for (int i = depth + 1; i < DEPTH_COUNTS_TO_TRACK; ++i) {
+        //    status.maxMovesAtDepth[i] = -1;
+        //    status.movesFinishedAtDepth[i] = -1;
+        //}
+    }
+
+    do {
+        tmpOld = status.progressSaved;
+        tmpNew = tmpOld + finishedMoves / double(maxBoards - invalidMoves) * progressChunk;
+    } while (!status.progressSaved.compare_exchange_strong(tmpOld, tmpNew));
+
+    const double nextProgressChunk = progressChunk / newBoards;
+
+    if (finishedMoves + invalidMoves == maxBoards) { // all moves have been previously evaluated
+        return true;
+    }
+
+    sortHeuristics(mManager, board.symmetryBF.isSymmetric);
+
+    // TODO: change to using a MoveManager::iterator
+    for (int i = 0; i < newBoards; ++i) {
+        int nextBoardIdx = mManager[i].col;
+        assert(board.validMoves.cols[nextBoardIdx]);
+        NextMPtr* nextMovePtr = mManager[i].move;
+        assert(nextMovePtr != nullptr && *nextMovePtr != nullptr);
+        assert(!(*nextMovePtr)->getIsFinished()); // may need to change this for threading--hard to say
+
+        const Board &nextBoard = nextBoards[nextBoardIdx];
+
+        status.currentMoveRoute[depth] = nextBoardIdx;
+
+        bool finished = search<NextMPtr>(nextDepth, threadId, nextBoard, progress, nextProgressChunk, *nextMovePtr);
+
+        status.currentMoveRoute[depth] = -1;
+
+#if ET
+        if (!finished) {
+            // thread aborted
+            curMovePtr->releaseWithoutFinish();
+            return -1;
+        }
+#else
+        assert(finished);
+#endif
+
+        switch (doMoveEvaluation(mManager, i)) { // intentionally use i here rather than nextBoardIdx
+        case continueEval::finished:
+        case continueEval::finishedAfterCheckingNewBoards:
+            if (isRedTurn) {
+                assert(mManager.movesToWin == BLACK_LOST);
+            }
+            else {
+                assert(mManager.movesToWin == 0 || mManager.movesToWin == 2);
+            }
+
+            return true;
+        }
 
         progress += nextProgressChunk;
         setProgress(progress);
     }
 
-    if (nextBoardIdx == -1) {
-        // thread was aborted because parent thread was notified
-        assert(nextMovePtr == nullptr);
-        curMovePtr->releaseWithoutFinish();
-        return -1;
-    }
-
-    manageMemory();
-
-    if (depth <= DEPTH_TO_PRINT_PROGRESS) {
-        printProgress(threadId, board.heuristic);
-    }
-
-    assert(movesTilWin > 0);
-    curMovePtr->finish(movesTilWin);
-    return movesTilWin;
+    return true;
 }
 
-inline void decRedMoveRefCounts(const RedMovePtr &curMovePtr, BlackCache &nextMoves) {
-    const RedHashes hashes = curMovePtr->getNextHashes();
-    for (auto rhit = hashes.begin(); rhit != hashes.end(); ++rhit) {
-        BlackMovePtr tmp = nextMoves.at(rhit->second);
-        if (tmp != nullptr) {
-            tmp->decRefCount();
+// searches the last move
+inline bool SearchTree::searchLast(const Board &board, BlackMovePtr &curMovePtr) {
+    assert(curMovePtr != nullptr);
+    assert(!curMovePtr->getIsFinished());
+    etassert(curMovePtr->getWorkerThread() == threadId);
+    constexpr int DEPTH = LAST_MOVE_DEPTH;
+
+    const int maxBoards = board.symmetryBF.isSymmetric ? SYMMETRIC_BOARD_WIDTH : BOARD_WIDTH;
+    if (board.symmetryBF.isSymmetric) {
+        ++stats.symmetricBoards;
+    }
+    else if (board.symmetryBF.possiblySymmetric) {
+        ++stats.possiblySymmetricBoards;
+    }
+    else {
+        ++stats.asymmetricBoards;
+    }
+
+    // if this is the max depth, check all next possible boards
+    // if winning board found, finish this move and return
+    for (int i = 0; i < maxBoards; ++i) {
+        if (!board.validMoves.cols[i]) {
+            continue;
+        }
+
+        Board lastBoard = board.addPiece(i);
+        if (lastBoard.getGameOver() == gameOverState::blackWon) {
+            curMovePtr->setNextHash(lastBoard.boardHash);
+            curMovePtr->finish(0);
+            return true;
         }
     }
+
+    MoveData::setBlackLost(rpc(MovePtr*, &curMovePtr));
+    return true;
 }
 
+void SearchTree::decRedNextRefs(RedMovePtr &ptr, const int depth) {
+    etassert(cal.moveCacheLocks[depth + 1].owns_lock());
+    sgc(etassert(cal.garbageLocks[depth + 1].owns_lock()));
+    int size;
+    const BoardHash* hashes = ptr->getNextHashes(size);
+    MoveCache &cache = cal.moveCache[depth + 1];
+
+#if SGC
+    Garbage &garbage = cal.garbage[depth + 1];
+    for (int i = 0; i < size; ++i) {
+        if (hashes[i] != 0) {
+            if (cache.at(hashes[i])->decRefCount() == 0) {
+                auto added = garbage.insert(hashes[i]);
+                assert(added.second);
+            }
+        }
+    }
+#else // SGC
+    for (int i = 0; i < size; ++i) {
+        if (hashes[i] != 0) {
+            cache.at(hashes[i])->decRefCount();
+        }
+    }
+#endif // SGC
+}
+
+#if USE_SMART_GC
+ull SearchTree::garbageCollect() {
+    ull movesDeleted = 0;
+    ull totalMovesInTreeBeforeGC = 0;
+    usp(ull movesWithMultipleReferences = 0);
+    usp(static_fail("TODO: add multiple references to gc struct in SearchTree"));
+
+    gc.lastMemoryFreed = 0;
+#define addMemoryFreed(val) gc.lastMemoryFreed += val
+
+    for (int d = 0; d < MAX_MOVE_DEPTH; ++d) {
+        const bool isRedTurn = d % 2 == 0;
+        MoveCache &cache = cal.moveCache[d];
+        totalMovesInTreeBeforeGC += cache.size();
+
+        for (auto &hit : cal.garbage[d]) {
+            MovePtr m = cache.at(hit);
+            assert(m->getRefCount() == 0);
+
+            if (m->getBlackLost()) {
+                addMemoryFreed(sizeof(pair<BoardHash, MovePtr>) + sizeof(MoveData));
+                nusp(delete m);
+            }
+            else if (isRedTurn) {
+                assert(d < MAX_MOVE_DEPTH - 1);
+
+#if USE_DYNAMIC_SIZE_RED_NEXT
+                addMemoryFreed(sizeof(pair<BoardHash, MovePtr>) + sizeof(RedMoveData) + (m->getIsSymmetric() ? SYMMETRIC_BOARD_WIDTH : BOARD_WIDTH));
+#else
+                addMemoryFreed(sizeof(pair<BoardHash, MovePtr>) + sizeof(RedMoveData));
+#endif
+                RedMovePtr rptr = rspc(m);
+                decRedNextRefs(rptr, d);
+                nusp(delete rptr);
+            }
+            else {
+                addMemoryFreed(sizeof(pair<BoardHash, MovePtr>) + sizeof(BlackMoveData));
+
+                BlackMovePtr bptr = bspc(m);
+                if (d < MAX_MOVE_DEPTH - 1) {
+                    BoardHash nextHash = bptr->getNextHash();
+                    if (nextHash != 0) {
+                        MovePtr next = cal.moveCache[d + 1].at(nextHash);
+                        if (next->decRefCount() == 0) {
+                            auto added = cal.garbage[d + 1].insert(nextHash);
+                            assert(added.second);
+                        }
+                    }
+                }
+
+                nusp(delete bptr);
+            }
+
+            auto erased = cache.erase(hit);
+            assert(erased == 1);
+        }
+
+        addMemoryFreed(sizeof(BoardHash) * cal.garbage[d].size());
+        movesDeleted += cal.garbage[d].size();
+        cal.garbage[d] = Garbage();
+    }
+
+    gc.lastPercentMovesDeleted = 100.0 * movesDeleted / totalMovesInTreeBeforeGC;
+    gc.lastGarbageCollected = movesDeleted;
+    gc.totalGarbageCollected += movesDeleted;
+    return movesDeleted;
+#undef addMemoryFreed
+}
+#else // USE_SMART_GC
+ull SearchTree::garbageCollect(const int depth, size_t minMemoryToClear)
+{
+    gc.lastMemoryFreed = 0;
+    bool mightBeOutOfRam = gc.lastCacheDepthScoured == 0;
+
+    ull movesDeleted = 0;
+    ull totalMovesInTreeBeforeGC = 0;
+#if USE_SMART_POINTERS
+    ull movesWithMultipleReferences = 0;
+#endif
+
+    size_t estimatedDataDeleted = 0;
+    int startDepth = MAX_MOVE_DEPTH;
+    gc.lastCacheDepthScoured = 0;
+
+    for (int d = MAX_MOVE_DEPTH - 1; d >= 0; --d) {
+        ull cSize = cal.moveCache[d].size();
+        totalMovesInTreeBeforeGC += cSize;
+
+        if (estimatedDataDeleted < minMemoryToClear) {
+            startDepth = d;
+            if (d % 2 == 0) {
+                estimatedDataDeleted += (cSize * 5 / 10) * (sizeof(pair<BoardHash, MovePtr>) + sizeof(RedMoveData));
+            }
+            else {
+                estimatedDataDeleted += (cSize * 7 / 10) * (sizeof(pair<BoardHash, MovePtr>) + sizeof(BlackMoveData));
+            }
+        }
+    }
+
+    startDepth = max(startDepth, 14);
+    cout << "Starting at depth " << startDepth << endl;
+
+    for (int e = startDepth; e >= 0; --e) {
+        for (int d = e; d < MAX_MOVE_DEPTH; ++d) {
+            const bool isRedTurn = d % 2 == 0;
+
+            ettgc(lGuard(moveCacheMutexes[d]));
+            MoveCache &cache = cal.moveCache[d];
+
+            for (auto it : cache) {
+                if (it.second->getRefCount() == 0) {
+                    etassert(it.second->getWorkerThread() == 0x7);
+                    hashesToDelete.push(it.first);
+
+#if USE_SMART_POINTERS
+                    if (it->second.use_count() > 1) {
+                        ++movesWithMultipleReferences;
+                    }
+#endif
+                }
+            }
+
+#if VERBOSE
+            if (hashesToDelete.size() > 0) {
+                cout << "Erasing " << hashesToDelete.size() << (isRedTurn ? " red" : " black") << " moves at depth=" << d << '\n';
+            }
+#endif
+
+            movesDeleted += hashesToDelete.size();
+            while (!hashesToDelete.empty()) {
+                MovePtr m = cache.at(hashesToDelete.front());
+                assert(m->getRefCount() == 0);
+
+                if (m->getBlackLost()) {
+                    gc.lastMemoryFreed += sizeof(pair<BoardHash, MovePtr>) + sizeof(MoveData);
+                    nusp(delete m);
+                }
+                else if (isRedTurn) {
+                    assert(d < MAX_MOVE_DEPTH - 1);
+
+#if USE_DYNAMIC_SIZE_RED_NEXT
+                    gc.lastMemoryFreed += sizeof(pair<BoardHash, MovePtr>) + sizeof(RedMoveData) + (m->getIsSymmetric() ? SYMMETRIC_BOARD_WIDTH : BOARD_WIDTH);
+#else
+                    gc.lastMemoryFreed += sizeof(pair<BoardHash, MovePtr>) + sizeof(RedMoveData);
+#endif
+                    RedMovePtr rptr = rspc(m);
+                    decRedNextRefs(rptr, d);
+                    nusp(delete rptr);
+                }
+                else {
+                    gc.lastMemoryFreed += sizeof(pair<BoardHash, MovePtr>) + sizeof(BlackMoveData);
+
+                    BlackMovePtr bptr = bspc(m);
+                    if (d < MAX_MOVE_DEPTH - 1) {
+                        BoardHash nextHash = bptr->getNextHash();
+                        if (nextHash != 0) {
+                            cal.moveCache[d + 1].at(nextHash)->decRefCount();
+                        }
+                    }
+
+                    nusp(delete bptr);
+                }
+
+                auto erased = cache.erase(hashesToDelete.front());
+                assert(erased == 1);
+
+                hashesToDelete.pop();
+            }
+
+            if (gc.lastMemoryFreed > minMemoryToClear && movesDeleted > MIN_GARBAGE_TO_DELETE) {
+                break;
+            }
+        }
+
+        if (gc.lastMemoryFreed > minMemoryToClear && movesDeleted > MIN_GARBAGE_TO_DELETE) {
+            gc.lastCacheDepthScoured = e;
+            break;
+        }
+    }
+
+#if USE_SMART_POINTERS
+    static_fail("")
+    if (movesWithMultipleReferences > 0) {
+        SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), 14);
+        cout << "\nWarning: found " << movesWithMultipleReferences << " moves with multiple strong references\n";
+        SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), 7);
+    }
+#endif
+
+    if (gc.lastCacheDepthScoured == 0 && mightBeOutOfRam) {
+        gc.cacheFullAt = depth;
+    }
+    else {
+        gc.cacheFullAt = MAX_MOVE_DEPTH;
+    }
+
+    gc.lastPercentMovesDeleted = 100.0 * movesDeleted / totalMovesInTreeBeforeGC;
+    gc.lastGarbageCollected = movesDeleted;
+    gc.totalGarbageCollected += movesDeleted;
+    return movesDeleted;
+#undef addMemoryFreed
+}
+#endif
+
+void SearchTree::manageMemory(int depth) {
+    static auto &pmc = status.pmc;
+    static auto &maxMemoryToUse = status.maxMemoryToUse;
+
+    et(depth = min(depth, THREAD_AT_DEPTH));
+    if (!cal.manageMemoryLock.test_and_set()) {
+        status.lowestDepthEvaluated = min(status.lowestDepthEvaluated, status.lowestDepthEvaluatedSinceLastGC);
+
+        if (checkMemory) {
+            GetProcessMemoryInfo(hProcess, &pmc, sizeof(pmc));
+            if (pmc.PagefileUsage > maxMemoryToUse && depth <= gc.cacheFullAt) {
+                if (status.movesAddedSinceLastGC > movesAllowedToBeAddedAfterGarbageCollection) {
+                    lGuard(cal.ioMutex);
+                    lGuard(cal.gcMutex);
+
+                    clock_t gcTime = clock();
+                    ull memoryThreshold = maxMemoryToUse;
+#if USE_PERCENTAGE_MEMORY
+                    memoryThreshold = memoryThreshold * ALLOWED_MEMORY_PERCENT / 100;
+#else // USE_PERCENTAGE_MEMORY
+#ifdef NDEBUG
+                    memoryThreshold -= STATIC_MEMORY_REMAINING_LIMIT << 19; // 19 instead of 20 here to be a little lenient
+#endif // NDEBUG
+#endif // USE_PERCENTAGE_MEMORY
+
+                    ull minMemoryToClear = pmc.PagefileUsage - memoryThreshold;
+
+                    cout << setColor(10) << "Collecting garbage" << endl << resetColor;
+                    cout << "Delete at least " << (minMemoryToClear >> 20) << " MB" << endl;
+                    ull garbageCollected = garbageCollect(depth, minMemoryToClear);
+                    clearScreen();
+
+                    gcTime = clock() - gcTime;
+                    ++gc.nextGCCount;
+                    gc.lastGCTime = gcTime;
+                    gc.timeSpentGCing += gcTime;
+
+                    movesAllowedToBeAddedAfterGarbageCollection = garbageCollected >> 1;
+                    status.movesAddedSinceLastGC = 0;
+
+                    setMaxMemoryToUse();
+
+                    status.lowestDepthEvaluatedSinceLastGC = MAX_MOVE_DEPTH;
+                }
+            }
+
+            checkMemory = false;
+        }
+
+        cal.manageMemoryLock.clear();
+    }
+
+}
+
+void SearchTree::setCheckMemoryAtInterval() {
+    while (true) {
+        this_thread::sleep_for(CHECK_MEMORY_INTERAVAL);
+        lGuard(cal.gcMutex);
+        int tries = 0;
+        constexpr int maxTries = 100000;
+        while ((cal.manageMemoryLock.test_and_set()) && ++tries < maxTries);
+        if (tries >= maxTries) {
+            // let go of the gcMutex to avoid race condition
+            continue;
+        }
+
+        checkMemory = true;
+        cal.manageMemoryLock.clear();
+    }
+}
+
+void SearchTree::setMaxMemoryToUse() {
+    static auto &pmc = status.pmc;
+    static auto &maxMemoryToUse = status.maxMemoryToUse;
+    GlobalMemoryStatusEx(&memInfo);
+    GetProcessMemoryInfo(hProcess, &pmc, sizeof(pmc));
+
+#if USE_PERCENTAGE_MEMORY
+    maxMemoryToUse = max((memInfo.ullAvailPhys + pmc.WorkingSetSize) * ALLOWED_MEMORY_PERCENT / 100, pmc.WorkingSetSize);
+#else // USE_PERCENTAGE_MEMORY
+#ifdef NDEBUG
+    maxMemoryToUse = memInfo.ullAvailPhys + pmc.WorkingSetSize - (STATIC_MEMORY_REMAINING_LIMIT << 20);
+#else // NDEBUG
+    maxMemoryToUse = STATIC_MEMORY_LIMIT << 20;
+#endif // NDEBG
+#endif // USE_PERCENTAGE_MEMORY
+}
+
+#pragma endregion
+
+#pragma region Function definitions
+
+template <>
+inline void sortHeuristics<BlackMoveManager>(BlackMoveManager &mManager, const bool isSymmetric) {
+    if (isSymmetric) {
+        SortingNetwork::Sort4Reverse(mManager.moves);
+    }
+    else {
+        SortingNetwork::Sort7Reverse(mManager.moves);
+    }
+}
+
+template <>
+inline void sortHeuristics<RedMoveManager>(RedMoveManager &mManager, const bool isSymmetric) {
+    if (isSymmetric) {
+        SortingNetwork::Sort4(mManager.moves);
+    }
+    else {
+        SortingNetwork::Sort7(mManager.moves);
+    }
+}
+
+inline void printParentThreadShortCircuited(int threadId) {
+#if VERBOSE
+    static_fail(TODO_VERBOSE);
+    lGuard(ioMutex);
+
+    SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), 10);
+    cout << "Parent node has been evaluated.  Thread " << threadId << " can return without finishing.\n";
+    SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), 7);
+#endif
+}
+
+#if ET
+static_fail("TODO: Remove this and move it to MoveManager::iterator");
 // returns true if a moves was acquired, else false (either becauses all moves are finished or the thread was interrupted
 // waits if all next moves are currently locked but at least one is unfinished
-template<typename TData>
-inline bool acquireMove(int &outBoardIdx, shared_ptr<TData>* &outMove, const uint threadId, const int actualDepth,
+template <typename TData>
+inline bool acquireMove(int &outBoardIdx, TDataPtr* &outMove, const uint threadId, const int depth,
     const int parentThreadDepth, const Board &curBoard, const Board(&nextBoards)[BOARD_WIDTH],
-    cacheMap<BoardHash, shared_ptr<TData>> &cache, const int maxBoards, const array<int, BOARD_WIDTH> &moveIndicies) {
+    MoveCache &cache, const int maxBoards, const array<int, BOARD_WIDTH> &moveIndicies) {
 
-    using TPtr = shared_ptr<TData>;
-
-    const int depth = actualDepth / 2;
-    const int actualNextDepth = actualDepth + 1;
     outMove = nullptr;
     outBoardIdx = -1;
+
+    if (threadDepthFinished[parentThreadDepth]) {
+        printParentThreadShortCircuited(threadId);
+        return false;
+    }
+
+    const int nextDepth = depth + 1;
 
     int movesFinished = 0;
 
     // check for unfinished, unlocked moves
-    for (int i = 0; i < maxBoards; ++i) {
-        int x = moveIndicies[i];
-        if (!curBoard.isValidMove(x)) {
-            ++movesFinished;
-            continue;
-        }
+    {
+        ettgc(lGuard(moveCacheMutexes[nextDepth]));
+        for (int i = 0; i < maxBoards; ++i) {
+            int x = moveIndicies[i];
+            if (!curBoard.isValidMove(x)) {
+                // we know that all the invalid moves were shoved to the back of the array
+                break;
+            }
 
-        TPtr* tmpMvPtr = &cache.at(nextBoards[x].boardHash);
-        if (shortCircuit(*tmpMvPtr)) {
-            outMove = tmpMvPtr;
-            outBoardIdx = i;
-            return false;
-        }
+            MovePtr* tmpMvPtr = &cache.at(nextBoards[x].boardHash);
+            if (shortCircuit(rpc(TDataPtr*, tmpMvPtr))) {
+                outMove = rpc(TDataPtr*, tmpMvPtr);
+                outBoardIdx = i;
+                return false;
+            }
 
-        if ((*tmpMvPtr) == nullptr || (*tmpMvPtr)->getIsFinished()) {
-            ++movesFinished;
-            continue;
-        }
+            if ((*tmpMvPtr)->getIsFinished()) {
+                ++movesFinished;
+                continue;
+            }
 
-        bool acquiredMove = (*tmpMvPtr)->acquire(threadId);
-        if (acquiredMove) {
-            outBoardIdx = x;
-            outMove = tmpMvPtr;
-            return true;
+            bool acquiredMove = (*tmpMvPtr)->acquire(threadId);
+            if (acquiredMove) {
+                outBoardIdx = x;
+                outMove = rpc(TDataPtr*, tmpMvPtr);
+                return true;
+            }
         }
     }
 
@@ -632,331 +910,285 @@ inline bool acquireMove(int &outBoardIdx, shared_ptr<TData>* &outMove, const uin
     // all unfinished moves are locked
     for (int i = 0; i < maxBoards; ++i) {
         if (!curBoard.isValidMove(i)) {
-            continue;
+            // we know that all the invalid moves were shoved to the back of the array
+            break;
         }
 
         BoardHash nHash = nextBoards[i].boardHash;
 
-        uLock lk(cacheLocks[actualNextDepth]);
         duration<uint> timeWaited = 0s;
-        while (!moveCVs[depth].wait_for(lk, TIME_TO_WAIT_FOR_CVS, [cache, depth, nHash] {
-            TPtr tmpMvPtr = cache.at(nHash);
-            if (tmpMvPtr == nullptr || tmpMvPtr->getIsFinished()) {
-                return true;
-            }
-            else {
-                return false;
-            }
-        })) {
+        auto predicate = [cache, depth, nHash, threadId] {
+            const MovePtr* tmpMvPtr = &cache.at(nHash);
 
+            return (*tmpMvPtr)->getIsFinished() || (*tmpMvPtr)->acquire(threadId);
+        };
 
+        uLock cacheLk(moveCacheMutexes[nextDepth]);
+        while (!moveCVs[depth].wait_for(cacheLk, TIME_TO_WAIT_FOR_CVS, predicate)) {
             timeWaited += duration_cast<seconds>(TIME_TO_WAIT_FOR_CVS);
-            lock_guard<mutex> ioLk(ioLock);
+            uLock ioLk(ioMutex);
             cout << "Thread " << threadId <<
-                " at depth " << actualDepth <<
+                " at depth " << depth <<
                 " has waited " << timeWaited.count() <<
-                " seconds for a move to finish.\n";
+                " seconds for a move owned by thread " <<
+                cache.at(nHash)->getWorkerThread() <<
+                " to finish.\n";
+            ioLk.unlock();
 
             if (threadDepthFinished[parentThreadDepth]) {
-                cout << "Parent node has been evaluated.  Thread " << threadId << " can return without finishing.\n";
-                lk.unlock();
-                outMove = nullptr;
+                printParentThreadShortCircuited(threadId);
+                cacheLk.unlock();
                 return false;
             }
         }
 
-        TPtr* tmpMvPtr = &cache.at(nHash);
-        if (shortCircuit(*tmpMvPtr)) {
-            outMove = tmpMvPtr;
+        cacheLk.unlock();
+
+        MovePtr* tmpMvPtr = &cache.at(nHash);
+        if ((*tmpMvPtr)->getWorkerThread() == threadId) {
+            assert(!(*tmpMvPtr)->getIsFinished());
+            outMove = rpc(TDataPtr*, tmpMvPtr);
             outBoardIdx = i;
-            lk.unlock();
-            return false;
+            return true;
         }
 
-        lk.unlock();
+        if (shortCircuit(rpc(TDataPtr*, tmpMvPtr))) {
+            outMove = rpc(TDataPtr*, tmpMvPtr);
+            outBoardIdx = i;
+            return false;
+        }
     }
 
     return false;
 }
-
-inline void printProgress(const uint threadId, const Heuristic heuristic)
-{
-    ioLock.lock();
-    double progress = 0.0;
-    for (int i = 0; i <= MAX_THREADS; ++i) {
-        progress += threadProgress[i];
-    }
-
-    cout << "Progress: " << fixed << setprecision(10) << progress * 100 << "%\n"
-        << "Boards evaluated: " << (boardsEvaluated + tmpBoardsEvaluated) << '\n'
-        << "Cache hits: " << cacheStats.hits << "\nCache misses: " << cacheStats.misses << '\n'
-        << "Cache size: " << cacheStats.misses - totalGarbageCollected << '\n';
-
-    printTime(progress);
-
-    cout << "\nMove route:\n";
-    for (int i = 0; i < BOARD_SIZE; ++i) {
-        if (currentMoveRoute[threadId][i] == -1) {
-            break;
-        }
-
-        cout << setfill(' ') << setw(4) << static_cast<int>(currentMoveRoute[threadId][i]);
-    }
-
-    cout << "\nCurrent Heuristic: " << heuristic;
-    cout << "\n\n";
-    ioLock.unlock();
-}
-
-inline void printTime(const double progress) {
-    ull ms = clock() - begin_time;
-    ull seconds = ms / CLOCKS_PER_SEC;
-    ull minutes = seconds / 60;
-    ull hours = minutes / 60;
-    ull days = hours / 24;
-
-    cout << "Time elapsed:   " << setfill(' ') << setw(8) << days << ':'
-        << setfill('0') << setw(2) << hours % 24 << ':'
-        << setfill('0') << setw(2) << minutes % 60 << ':'
-        << setfill('0') << setw(2) << seconds % 60 << "\n";
-
-    ms = static_cast<ull>(ms / progress);
-    seconds = ms / CLOCKS_PER_SEC - seconds;
-    minutes = seconds / 60;
-    hours = minutes / 60;
-    days = hours / 24;
-
-    cout << "Time remaining: " << setfill(' ') << setw(8) << days << ':'
-        << setfill('0') << setw(2) << hours % 24 << ':'
-        << setfill('0') << setw(2) << minutes % 60 << ':'
-        << setfill('0') << setw(2) << seconds % 60 << "\n";
-}
-
-template<typename TPtr>
-inline void finishMove(int depth, int movesTilWin, TPtr* curMovePtr) {
-    assert(curMovePtr != nullptr);
-    uLock lk(cacheLocks[depth]);
-    
-    if (movesTilWin == BLACK_LOST) {
-        *curMovePtr = nullptr;
-    }
-    else {
-        (*curMovePtr)->finish(movesTilWin);
-    }
-
-    lk.unlock();
-    moveCVs[depth].notify_all();
-}
-
-ull garbageCollect()
-{
-    cout << "Collecting garbage\n";
-
-    //#ifndef NDEBUG
-    ull movesWithMultipleReferences = 0;
-    //#endif
-
-    const int maxDepth = MAX_MOVE_DEPTH / 2;
-    unordered_set<BoardHash> redS[maxDepth];
-    unordered_set<BoardHash> blackS[maxDepth];
-    unordered_set<BoardHash> &rs = redS[0];
-    unordered_set<BoardHash> &bs = blackS[0];
-
-    ull movesDeleted = 0;
-    ull movesCondensed = 0;
-    for (int d = 0; d < maxDepth; ++d) {
-        rs = redS[d];
-        bs = blackS[d];
-
-        {
-            lock_guard<mutex> lg(cacheLocks[d * 2]);
-            for (RedCacheIt it = redMoves[d].begin(); it != redMoves[d].end(); ++it) {
-                if (it->second != nullptr) {
-                    if (it->second->getRefCount() == 0) {
-                        assert(it->second->getWorkerThread() == 0x7);
-                        rs.insert(it->first);
-
-                        //#ifndef NDEBUG
-                        if (it->second.use_count() > 1) {
-                            ++movesWithMultipleReferences;
-                        }
-                        //#endif
-                    }
-                    else if (it->second->getIsFinished()) {
-                        movesCondensed += it->second->condense();
-                    }
-                }
-            }
-
-#ifdef VERBOSE
-            if (rs.size() > 0) {
-                cout << "Erasing " << rs.size() << " red moves at depth=" << static_cast<int>(d) << '\n';
-            }
 #endif
 
-            for (unordered_set<BoardHash>::iterator rsit = rs.begin(); rsit != rs.end(); ++rsit) {
-                if (((d * 2) < maxDepth - 1) & (*rsit != 0)) {
-                    RedHashes hashes = redMoves[d][*rsit]->getNextHashes();
-                    for (auto rhit = hashes.begin(); rhit != hashes.end(); ++rhit) {
-                        BlackMovePtr mptr = blackMoves[d][rhit->second];
-                        if (mptr != nullptr) {
-                            mptr->decRefCount();
-                        }
-                    }
-                }
-
-                redMoves[d].erase(*rsit);
-            }
-        }
-
-        movesDeleted += rs.size();
-        rs.clear();
-        if (d < maxDepth - 1) {
-            rs = redS[d + 1];
-        }
-
-        {
-            lock_guard<mutex> lg(cacheLocks[d * 2 + 1]);
-            for (BlackCacheIt it = blackMoves[d].begin(); it != blackMoves[d].end(); ++it) {
-                if (it->second != nullptr && it->second->getRefCount() == 0) {
-                    assert(it->second->getWorkerThread() == 0x7);
-                    bs.insert(it->first);
-
-                    //#ifndef NDEBUG
-                    if (it->second.use_count() > 1) {
-                        ++movesWithMultipleReferences;
-                    }
-                    //#endif
-                }
-            }
-
-#ifdef VERBOSE
-            if (bs.size() > 0) {
-                cout << "Erasing " << bs.size() << " black moves at depth=" << static_cast<int>(d) << '\n';
-            }
-#endif
-
-            for (unordered_set<BoardHash>::iterator bsit = bs.begin(); bsit != bs.end(); ++bsit) {
-                if (((d * 2 + 1) < maxDepth - 1) & (*bsit != 0)) {
-                    const BoardHash nextHash = blackMoves[d][*bsit]->getNextHash();
-                    if (nextHash != 0) {
-                        RedMovePtr mptr = redMoves[d][nextHash];
-                        if (mptr != nullptr) {
-                            mptr->decRefCount();
-                        }
-                    }
-                }
-
-                blackMoves[d].erase(*bsit);
-            }
-        }
-
-        movesDeleted += bs.size();
-        bs.clear();
+#if ET
+static_fail("TODO: Remove this and move it to MoveManager::iterator");
+const bool acquireThreadId(int &childThreadId) {
+    et(lGuard(threadsAvailableLock));
+    if (threadsAvailable.none()) {
+        childThreadId = -1;
+        return false;
     }
 
-    //#ifndef NDEBUG
-    if (movesWithMultipleReferences > 0) {
-        SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), 14);
-        cout << "\nWarning: found " << movesWithMultipleReferences << " moves with multiple strong references\n";
+    for (int i = 0; i < MAX_THREADS; ++i) {
+        if (threadsAvailable[i]) {
+            threadsAvailable[i] = false;
+            childThreadId = i;
+            return true;
+        }
+    }
+
+    throw exception("Somehow didn't find an available thread when threadsAvailable wasn't none()");
+}
+
+// wrapper for running the searches and then notifying when finished
+int doWork(int nextDepth, int childThreadId, const int boardMove, int depth, const Board& nextBoard, const double nextProgressChunk, RedMovePtr &nextMovePtr) {
+#if VERBOSE
+    static_fail(TODO_VERBOSE);
+    {
+        lGuard(ioMutex);
+        cout << "Thread " << childThreadId << " working on move " << boardMove << "\n";
+    }
+#endif
+
+    try {
+        int val = searchRed(nextDepth, childThreadId, depth, nextBoard, 0.0, nextProgressChunk, nextMovePtr);
+
+#if VERBOSE
+
+        {
+            lGuard(ioMutex);
+            cout << "Thread " << childThreadId << " finished working on move " << boardMove << ": " << val << "\n";
+        }
+#endif
+
+        uLock lk(threadFinishedMutex);
+        threadFinishedCV.wait(lk, [] { return true; });
+        threadFinished[childThreadId] = true;
+        lk.unlock();
+
+#if VERBOSE
+        {
+            lGuard(ioMutex);
+            cout << "Thread " << childThreadId << " set thread finished\n";
+        }
+#endif
+
+        threadFinishedCV.notify_one();
+
+        return val;
+    }
+    catch (exception &e) {
+        lGuard(ioMutex);
+        SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), 12);
+        cout << "Thread " << childThreadId << " failed with exception:\n" << e.what() << "\n\n";
+        SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), 7);
+
+        return -2;
+    }
+}
+
+void searchThreaded(const int depth, const Board &board, MoveManager &bmm, double progress,
+    const double nextProgressChunk, const Board(&nextBoards)[BOARD_WIDTH], MoveCache &cache, const int maxBoards,
+    const array<int, BOARD_WIDTH> &moveIndicies)
+{
+    assert(depth == THREAD_AT_DEPTH);
+
+#if VERBOSE
+    static_fail(TODO_VERBOSE);
+    {
+        lGuard(ioMutex);
+        SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), 11);
+        cout << "Splitting\n";
         SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), 7);
     }
-    //#endif
-
-    cout << "\nCondensed " << movesCondensed << " red move hashes: " << ((sizeof(BoardHash) * movesCondensed) >> 20) 
-        << "MB reclaimed\n";
-
-    //if (movesDeleted >= DATA_TO_DELETE) {
-        return movesDeleted;
-    //}
-
-#ifdef VERBOSE
-    cout << "\nDid not find enough unreferenced moves -- deleting BLACK_LOST moves\n\n";
-#else
-    cout << "Did not find enough unreferenced moves -- deleting BLACK_LOST moves\n";
 #endif
 
-    for (int di = 0; di < maxDepth; ++di) {
-        const int d = di < 10 ? di : maxDepth - di + 9;
+    const int threadId = -1;
+    const int nextDepth = depth + 1;
+    const int parentThreadDepth = -1;
+    future<int> movesToWin[MAX_THREADS];
 
-        rs = redS[d];
-        bs = blackS[d];
-        {
-            lock_guard<mutex> lg(cacheLocks[d * 2]);
-            for (RedCacheIt it = redMoves[d].begin(); (it != redMoves[d].end()) & (movesDeleted < DATA_TO_DELETE); ++it) {
-                if (it->second == nullptr) {
-                    movesDeleted++;
-                    rs.insert(it->first);
-                }
+    Board threadBoards[MAX_THREADS];
+    int threadBoardIdxs[MAX_THREADS];
+    RedMovePtr* nextMovePtrs[MAX_THREADS];
+
+    static_fail("There is *no way* this is the simplest/cleanest way to do this");
+    while (true) {
+        int childThreadId = -1;
+        while (acquireThreadId(childThreadId)) {
+            assert(childThreadId / MAX_THREADS == 0); // thread id is valid
+
+            Board &tBoard = threadBoards[childThreadId];
+            int &tBoardIdx = threadBoardIdxs[childThreadId];
+            RedMovePtr* &nextMovePtr = nextMovePtrs[childThreadId];
+            future<int> &mtw = movesToWin[childThreadId];
+            if (acquireMove(tBoardIdx, nextMovePtr, childThreadId, depth, -1, board, nextBoards, cache, maxBoards,
+                moveIndicies)) {
+                assert(nextMovePtr != nullptr && *nextMovePtr != nullptr);
+                assert((*nextMovePtr)->getWorkerThread() == childThreadId);
+
+                tBoard = nextBoards[tBoardIdx];
+                allCurrentMoveRoutes[childThreadId][depth] = tBoardIdx;
+
+                mtw = async(std::launch::async, &doWork, nextDepth, childThreadId, tBoardIdx, depth, tBoard,
+                    nextProgressChunk, ref(*nextMovePtr));
             }
-
-#ifdef VERBOSE
-            if (rs.size() > 0) {
-                cout << "Erasing " << rs.size() << " red moves at depth=" << static_cast<int>(d) << '\n';
-            }
-#endif
-
-            for (unordered_set<BoardHash>::iterator sit = rs.begin(); sit != rs.end(); ++sit) {
-                redMoves[d].erase(*sit);
+            else {
+                et(lGuard(threadsAvailableMutex));
+                threadsAvailable[childThreadId] = true;
+                break;
             }
         }
 
-        rs.clear();
+#if VERBOSE
 
         {
-            lock_guard<mutex> lg(cacheLocks[d * 2 + 1]);
-            for (BlackCacheIt it = blackMoves[d].begin(); (it != blackMoves[d].end()) & (movesDeleted < DATA_TO_DELETE); ++it) {
-                if (it->second == nullptr) {
-                    movesDeleted++;
-                    bs.insert(it->first);
-                }
-            }
-
-
-#ifdef VERBOSE
-            if (bs.size() > 0) {
-                cout << "Erasing " << bs.size() << " black moves at depth=" << static_cast<int>(d) << '\n';
-            }
+            lGuard(ioMutex);
+            SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), 10);
+            cout << "Spawned " << MAX_THREADS - threadsAvailable.count() << " thread(s)\n\n";
+            SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), 7);
+        }
 #endif
 
-            for (unordered_set<BoardHash>::iterator sit = bs.begin(); sit != bs.end(); ++sit) {
-                blackMoves[d].erase(*sit);
+        {
+            et(lGuard(threadsAvailableMutex));
+            if (threadsAvailable.all()) {
+                // all values are finished being calculated
+                // exit loop
+                break;
             }
         }
 
-        bs.clear();
+        uLock lk(threadFinishedMutex);
+        threadFinishedCV.wait(lk, [] {
+            return threadFinished.any();
+        });
+
+        lk.unlock();
+        threadFinishedCV.notify_one();
+
+        while (threadFinished.any()) {
+            for (uint cThreadId = 0; cThreadId < MAX_THREADS; ++cThreadId) {
+                if (!threadFinished[cThreadId]) {
+                    continue;
+                }
+
+#if VERBOSE
+
+                {
+                    lGuard(ioMutex);
+                    cout << "Evaluating result from thread " << cThreadId << "\n";
+                }
+#endif
+
+                lk.lock();
+                threadFinishedCV.wait(lk, [] { return true; });
+                threadFinished[cThreadId] = false;
+                threadsAvailable[cThreadId] = true;
+                lk.unlock();
+
+                const Board tBoard = threadBoards[cThreadId];
+                const int tBoardIdx = threadBoardIdxs[cThreadId];
+                const RedMovePtr* nextMovePtr = nextMovePtrs[cThreadId];
+
+                int tmpMovesTilWin = movesToWin[cThreadId].get();
+                allCurrentMoveRoutes[cThreadId][depth] = -1;
+
+                // thread aborted shouldn't occur here, since we don't tell the threads they're aborted until later
+                assert(tmpMovesTilWin != -1);
+
+                if (tmpMovesTilWin != BLACK_LOST) {
+                    ++tmpMovesTilWin;
+                    if (tmpMovesTilWin < bmm.movesToWin) {
+                        bmm.movesToWin = tmpMovesTilWin;
+                        bmm.bestHash = tBoard.boardHash;
+                        bmm.bestMove = tBoardIdx;
+                    }
+
+                    // short-circuit if black can force a win with its next move
+                    if (bmm.movesToWin == 2) {
+                        threadDepthFinished[depth] = true;
+
+                        // finishing of current move is done in the calling searchBlack() function
+                        // so is garbage collection
+
+                        for (int i = 0; i < MAX_THREADS; ++i) {
+                            // wait for all threads to return
+                            int tmp = movesToWin[i].get();
+                            if (i != cThreadId && nextMovePtrs[i] != nullptr) {
+                                // if the thread finished before being short-circuited, tmp should not be -1
+                                // if the thread was short-circuited, tmp should be -1
+                                assert((tmp == -1) ^ (*nextMovePtrs[i])->getIsFinished());
+                            }
+                        }
+
+                        threadDepthFinished[depth] = false;
+                        return;
+                    }
+                }
+                else {
+                    assert((*nextMovePtr)->getBlackLost());
+                }
+
+                progress += nextProgressChunk;
+                threadProgress[MAX_THREADS] = progress;
+            }
+        }
     }
 
-    return movesDeleted;
-}
+#if VERBOSE
 
-inline void manageMemory() {
-    if ((tmpBoardsEvaluated >= CHECK_MEMORY_AFTER_BOARDS_EVALUATED) &
-        (movesAddedSinceLastGC > movesAllowedToBeAddedAfterGarbageCollection)) {
-        boardsEvaluated += tmpBoardsEvaluated;
-        tmpBoardsEvaluated = 0;
-
-        GetProcessMemoryInfo(hProcess, &pmc, sizeof(pmc));
-        cout << "Current process size: " << (pmc.PagefileUsage >> 20) << "MB / " << (maxMemoryToUse >> 20) << "MB\n\n";
-
-        if (pmc.PagefileUsage > maxMemoryToUse) {
-            ull garbageCollected = garbageCollect();
-            movesAllowedToBeAddedAfterGarbageCollection = garbageCollected >> 1;
-            movesAddedSinceLastGC = 0;
-            totalGarbageCollected += garbageCollected;
-
-            cout << "\nTotal moves erased: " << garbageCollected << "\n";
-            setMaxMemoryToUse();
-        }
+    {
+        lGuard(ioMutex);
+        SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), 11);
+        cout << "Threads joined\n\n";
+        SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), 7);
     }
+#endif
 }
 
-void setMaxMemoryToUse() {
-    GlobalMemoryStatusEx(&memInfo);
-    GetProcessMemoryInfo(hProcess, &pmc, sizeof(pmc));
-
-    maxMemoryToUse = max((memInfo.ullAvailPhys + pmc.WorkingSetSize) * ALLOWED_MEMORY_PERCENT / 100, pmc.WorkingSetSize);
-
-    cout << "Max memory: " << (maxMemoryToUse >> 20) << "MB\n";
-    cout << "Current process size: " << (pmc.PagefileUsage >> 20) << "MB\n\n";
-}
+#endif
+#pragma endregion
