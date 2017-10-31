@@ -78,6 +78,8 @@ SearchTree
     -   (Note: don't bother trying to pull out the `threadId` parameter--I've given this more thought than it deserves
         and there is absolutely no point.)
 *   Consider renaming `SearchTree::status` to `SearchTree::state` as it seems more appropriate.
+*   Consider locking the `moveCache` with a reader/writer lock rather than a basic mutex.  This would allow multiple 
+    readers or a single writer to access the cache at a time.  See [How to make a multiple-read/single-write lock from more basic synchronization primitives?](https://stackoverflow.com/questions/27860685/how-to-make-a-multiple-read-single-write-lock-from-more-basic-synchronization-pr).
 
 
 #### Alternative Search Architecture ####
@@ -422,6 +424,7 @@ Add performance tests
 *   Test performance of various thread depths when parallelism is implemented
 *   Test performance of smart gc vs not vs hybrid
 *   Test performance of various max memory usage thresholds
+*   Test performance of locking moveCache with simple mutext vs reader/writer lock
 
 
 cpp11-on-multicore
@@ -433,6 +436,7 @@ bitfield.h
 *   Consider adding specialization for `BitFieldMember<T, Offset, 1>` that returns a `bool` rather than a `T`
     -   See specialization of `BitFieldArray<T, Offset, 1, NumItems>::Element` that I already made
 *   Determine if `Bitfield` is, in fact, thread-safe as is claimed by the creator of it
+
 
 <a name="connect4SolverGui"></a>
 Connect4SolverGUI (needs a better name)
@@ -454,6 +458,7 @@ Features
 *   Progress bars for depths?
 *   Memory usage.
 *   Sizes of each depth's cache.
+
 
 Long term
 =========
