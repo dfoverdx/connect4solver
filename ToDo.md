@@ -202,14 +202,14 @@ priority_queue<BoardMove> SearchTree::moveQueue;
 
 void run() {
     // generate first board, push a BoardMove into the moveQueue
-    // kick of MAX_THREADS threads that run doWork()
+    // kick off MAX_THREADS threads that run doWork()
     // wait on cv
     // upload tree to DB
 }
 
 template<typename CurMPtr>
 void processMove(BoardMove<CurMPtr> &bm) {
-    if (bm.moveData.getRefCount() == 0) {
+    if (bm.movePtr->getRefCount() == 0) {
         // erase move from cache
         // delete *mptr;
         return;
