@@ -266,7 +266,9 @@ void processMove(BoardMove<CurMPtr> &bm) {
     -   Consider writing version of code that doesn't use cpp11-on-multicore's `bitfield`, and instead uses masks
         with `atomic<T>::compare_exchange_strong()`.  This may, in fact, be necessary, as I'm not entirely sure why
         `bitfield` is atomic in the first place.  The best solution, if it turns out it's not atomic, might be to
-        edit the class so that it *is* atomic, rather than using complicated masks.
+        edit the class so that it *is* atomic, rather than using complicated masks.  Look at 
+        [Safe Bitfields in C++](http://preshing.com/20150324/safe-bitfields-in-cpp/) for reference on how to do
+        things atomically.
 *   Debug issue where `status.movesFinishedAtDepth` and `status.maxMovesAtDepth` aren't being set when the
     `LowestDepthManager` completes more than one depth of moves.  The bug is either in **SearchTree.h**:147
     (`SearchTree::LowestDepthmanager::~LowestDepthManager()`) or **SearchTree.cpp**:396 (`SearchTree::search()`)
