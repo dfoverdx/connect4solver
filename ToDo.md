@@ -75,7 +75,7 @@ SearchTree
     -   Would need to redeclare `SearchTree::searchLast()` to just be a specialized
         `SearchTree::search<BlackMoveData, LAST_MOVE_DEPTH, THREADED>()` and remove the call from current
         `search()`
-    -   (Note: don't bother trying to pull out the `threadId` parameter--I've given this more thought than it deserves
+    -   (Note: don't bother trying to pull out the `threadId` argument--I've given this more thought than it deserves
         and there is absolutely no point.)
 *   Consider renaming `SearchTree::status` to `SearchTree::state` as it seems more appropriate.
 *   Consider locking the `moveCache` with a reader/writer lock rather than a basic mutex.  This would allow multiple 
@@ -268,8 +268,8 @@ void processMove(BoardMove<CurMPtr> &bm) {
         `bitfield` is atomic in the first place.  The best solution, if it turns out it's not atomic, might be to
         edit the class so that it *is* atomic, rather than using complicated masks.
 *   Debug issue where `status.movesFinishedAtDepth` and `status.maxMovesAtDepth` aren't being set when the
-    `LowestDepthManager` completes more than one depth of moves.  The bug is either in SearchTree.h:147
-    (`SearchTree::LowestDepthmanager::~LowestDepthManager()`) or SearchTree.cpp:396 (`SearchTree::search()`)
+    `LowestDepthManager` completes more than one depth of moves.  The bug is either in **SearchTree.h**:147
+    (`SearchTree::LowestDepthmanager::~LowestDepthManager()`) or **SearchTree.cpp**:396 (`SearchTree::search()`)
 *   Figure out how to store the route taken in order to save/load progress between runs--may or may not be in the DB
 
 
@@ -308,8 +308,8 @@ Progress Printer (currently in SearchTree.IO.cpp)
 -------------------------------------------------
 
 *   Create `ProgressPrinter` class, add it as a friend to `SearchTree` and `GarbageCollector`, and refactor all 
-    code out of SearchTree.IO.cpp.
-*   Figure out how to hide the console cursor (currently code is in main.cpp, but it doesn't appear to be working)
+    code out of **SearchTree.IO.cpp**.
+*   Figure out how to hide the console cursor (currently code is in **main.cpp**, but it doesn't appear to be working)
 *   Auto-size console to be large enough to display whole of `printProgress()` output when process starts
 *   Move all IO operations out of `#if VERBOSE` sections and add a set of messages/warnings to 
     `SearchTree::status`.
@@ -364,11 +364,37 @@ Add database support: `DatabaseManager` class
             memory) have been loaded
 
 
+NextMoveDescriptor
+------------------
+
+*   Detemplatize.
+*   Change `move` type to `MovePtr*`.
+*   Update `MoveManager` (and subtypes) and `SearchTree` functions to accomodate change using 
+    `dynamic_pointer_cast<NextMPtr*>` and `dynamic_pointer_cast<NextMPtr>` when using smart pointers or simple 
+    `(NextMPtr*)` and `(NextMPtr)` when not.  (Add macros to **SearchTree.Macros.h**.)
+
+
 MoveManager
 -----------
 
+*   Make `MoveManager`'s methods IntelliSense-accessible in `SearchTree::search()`.  Here are some ideas:
+    -   Create a base class `MoveManagerBase` with public `virtual` method(s) used in `MoveManager<CurMPtr>`.
+        *   Define `operator[]`'s return type as `NextMoveDescriptor`.
+        *   Update `SearchTree::enumerateBoards()`
+            -   Remove `MM` template parameter, and replace with 
+                ```cpp
+                typedef conditional<is_same<...>, BlackMoveManager, RedMoveManager>::type MM;
+                ```
+            -   Update `MM &mManager` argument to `MoveManagerBase &mManager`
+            -   Cast `mManager` as `(MM)mManager` when necessary
+        *   Update `SearchTree::search()`
+            -   After initializing `mManager`, create a second variable `MoveManagerBase &mmb = (MoveManagerBase)mManager`.
+        *   Unless we implement using smart pointers for the `MoveManager`s, should not need `dynamic_cast` or 
+            `dynamic_pointer_cast`.
+    -   Create a wrapper template struct with a function that returns `NextMoveDescriptor` from 
+        `MoveManager.moves` so that IntelliSense at least knows it's getting a `NextMoveDescriptor`.
 *   Add two custom `iterator`s (one for threaded and one for not) that return all the data necessary for evaluating
-    the next move
+    the next move.
     -   Look at currently-commented-out `acquireMove()` in SearchTree.cpp for threaded approach
     -   To be used rather than the current for-loop in `SearchTree::search()`
     -   This is an abstraction that makes it easy/clean to find the next move, whether in parallel or in serial
@@ -412,7 +438,7 @@ Add unit test classes
     -   Attempt to write parallelism tests...?
 *   DatabaseManagerTest
     -   Test saving and loading to/from the db
-*   Test that bitfields from bitfield.h are in fact thread-safe
+*   Test that bitfields from **bitfield.h** are in fact thread-safe
 *   ([optional](#alternative-search-architecture)) BoardMoveTest
 
 
