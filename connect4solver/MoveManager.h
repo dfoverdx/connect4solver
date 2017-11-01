@@ -4,6 +4,7 @@
 #include <type_traits>
 #include <typeinfo>
 #include "Board.h"
+#include "Constants.h"
 #include "Macros.h"
 #include "MoveData.h"
 #include "NextMoveDescriptor.h"
@@ -18,8 +19,8 @@ namespace connect4solver {
 
     protected:
         MoveManager(const int depth, const Board &curBoard, CurMPtr* currentMovePtr, int movesToWin) :
-            depth(depth), currentHash(curBoard.boardHash), validMoves(curBoard.validMoves), currentMovePtr(currentMovePtr),
-            movesToWin(movesToWin)
+            depth(depth), nextDepth(depth + 1), currentHash(curBoard.boardHash), validMoves(curBoard.validMoves), 
+            currentMovePtr(currentMovePtr), movesToWin(movesToWin)
         {
             assert(currentMovePtr != nullptr && *currentMovePtr != nullptr);
             assert((depth % 2) ^ (std::is_same<CurMPtr, RedMovePtr>::value));
@@ -36,6 +37,7 @@ namespace connect4solver {
         const BoardHash currentHash;
         const ValidMoves validMoves;
         const int depth;
+        const int nextDepth;
         int movesToWin;
         std::array<NextMoveDescriptor<NextMPtr>, BOARD_WIDTH> moves;
 
@@ -44,26 +46,25 @@ namespace connect4solver {
             return moves[i];
         }
 
-        NextMPtr addMove(const int i, const Board &nextBoard) {
-            ettgcassert(SearchTree::cal.moveCacheLocks[depth + 1].owns_lock());
+        void addMove(const int i, const Board &nextBoard) {
+            assert(nextDepth < MAX_MOVE_DEPTH);
+            ettgcassert(SearchTree::cal.moveCacheLocks[nextDepth].owns_lock());
             assert(validMoves.cols[i]);
 
             moves[i].heur = nextBoard.heuristic;
             
             if (moves[i].move == nullptr) {
-                MoveCache &mc = SearchTree::cal.moveCache[depth + 1];
+                MoveCache &mc = SearchTree::cal.moveCache[nextDepth];
                 assert(mc.find(nextBoard.boardHash) == mc.end());
                 auto it = mc.insert({ nextBoard.boardHash, NextMPtr(new NextMData(nextBoard.symmetryBF.isSymmetric)) });
 
                 NextMPtr* tmp = rpc(NextMPtr*, &it.first->second);
                 moves[i].move = tmp;
-                return spc(NextMData, tmp);
             }
             else {
                 // happens when we add a move to the cache and then another board short-circuits the search of the
                 // unfinished move
                 assert(!(*moves[i].move)->getIsFinished());
-                return *moves[i].move;
             }
         }
     };
