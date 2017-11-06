@@ -5,88 +5,107 @@
 #include <typeinfo>
 #include "Board.h"
 #include "Constants.h"
-#include "Macros.h"
 #include "MoveData.h"
 #include "NextMoveDescriptor.h"
-#include "SearchTree.h"
-#include "SearchTree.Macros.h"
 
 namespace connect4solver {
-    template <typename CurMPtr>
     class MoveManager {
-        typedef typename std::conditional<std::is_same<CurMPtr, BlackMovePtr>::value, RedMovePtr, BlackMovePtr>::type NextMPtr;
-        typedef typename std::remove_pointer<NextMPtr>::type NextMData;
+    private:
+        inline void addMoveInner(const int x, const Board &nextBoard);
 
     protected:
-        MoveManager(const int depth, const Board &curBoard, CurMPtr* currentMovePtr, int movesToWin) :
-            depth(depth), nextDepth(depth + 1), currentHash(curBoard.boardHash), validMoves(curBoard.validMoves), 
-            currentMovePtr(currentMovePtr), movesToWin(movesToWin)
-        {
-            assert(currentMovePtr != nullptr && *currentMovePtr != nullptr);
-            assert((depth % 2) ^ (std::is_same<CurMPtr, RedMovePtr>::value));
+        typedef std::array<NextMoveDescriptor, BOARD_WIDTH> MoveDescriptorArray;
 
-            for (int i = 0; i < BOARD_WIDTH; ++i) {
-                moves[i] = { 0, 0, 0, nullptr };
-            }
+        MoveManager(const int depth, const BoardHash hash, const ValidMoves validMoves, MovePtr curMovePtr, const int movesToWin) :
+            currentHash(hash), validMoves(validMoves), depth(depth), nextDepth(depth + 1), m_curMovePtr(curMovePtr), movesToWin(movesToWin) {
+            assert(nextDepth < MAX_MOVE_DEPTH);
+            assert(m_curMovePtr != nullptr);
         }
 
-        virtual inline void finishMove() { throw std::exception("Attempted to call finish move from abstract MoveManager"); };
+        MovePtr m_curMovePtr;
+        MoveDescriptorArray m_moves;
+
+        virtual inline MovePtr makeMovePtr(const bool isSymmetric) = 0;
 
     public:
-        CurMPtr* currentMovePtr;
+        virtual ~MoveManager() {};
+
+        NextMoveDescriptor& operator[](int x);
+        
+        virtual inline void sortByHeuristics() = 0;
+
+#if ET | TGC
+        void addMove(const int x, const Board &nextBoard, const uLock &cacheLock);
+        void addMove(const int x, const Board &nextBoard, const lGuard &cacheLock);
+#else // ET | TGC
+        void addMove(const int x, const Board &nextBoard);
+#endif // ET | TGC
+
         const BoardHash currentHash;
         const ValidMoves validMoves;
         const int depth;
         const int nextDepth;
-        int movesToWin;
-        std::array<NextMoveDescriptor<NextMPtr>, BOARD_WIDTH> moves;
+        int movesToWin = 0;
 
-        NextMoveDescriptor<NextMPtr>& operator[](int i)
-        {
-            return moves[i];
+        NextMoveDescriptor& getMoves(int i) {
+            return static_cast<BlackNextMoveDescriptor&>(m_moves[i]);
         }
 
-        void addMove(const int i, const Board &nextBoard) {
-            assert(nextDepth < MAX_MOVE_DEPTH);
-            ettgcassert(SearchTree::cal.moveCacheLocks[nextDepth].owns_lock());
-            assert(validMoves.cols[i]);
-
-            moves[i].heur = nextBoard.heuristic;
-            
-            if (moves[i].move == nullptr) {
-                MoveCache &mc = SearchTree::cal.moveCache[nextDepth];
-                assert(mc.find(nextBoard.boardHash) == mc.end());
-                auto it = mc.insert({ nextBoard.boardHash, NextMPtr(new NextMData(nextBoard.symmetryBF.isSymmetric)) });
-
-                NextMPtr* tmp = rpc(NextMPtr*, &it.first->second);
-                moves[i].move = tmp;
-            }
-            else {
-                // happens when we add a move to the cache and then another board short-circuits the search of the
-                // unfinished move
-                assert(!(*moves[i].move)->getIsFinished());
-            }
+        void putMoves(int i, NextMoveDescriptor val) {
+            m_moves[i] = val;
         }
+
+        __declspec(property(get = getMoves, put = putMoves)) NextMoveDescriptor moves[];
     };
 
-    class BlackMoveManager : public MoveManager<BlackMovePtr> {
+    class BlackMoveManager : public MoveManager {
+    private:
+        inline MovePtr makeMovePtr(const bool isSymmetric);
+
     protected:
         inline void finishMove(const BoardHash bestHash);
 
     public:
-        BlackMoveManager(const int depth, const Board &curBoard, BlackMovePtr* currentMovePtr);
+        BlackMoveManager(const int depth, const Board &curBoard, BlackMovePtr curMovePtr);
         ~BlackMoveManager();
 
         int bestMove;
+
+        inline void sortByHeuristics();
+
+        BlackNextMoveDescriptor& getMoves(int i) {
+            return static_cast<BlackNextMoveDescriptor&>(m_moves[i]);
+        }
+
+        void putMoves(int i, BlackNextMoveDescriptor val) {
+            m_moves[i] = val;
+        }
+
+        __declspec(property(get = getMoves, put = putMoves)) BlackNextMoveDescriptor moves[];
     };
 
-    class RedMoveManager : public MoveManager<RedMovePtr> {
+    class RedMoveManager : public MoveManager {
+    private:
+        inline MovePtr makeMovePtr(const bool isSymmetric);
+
     protected:
         inline void finishMove();
         inline void copyHashesToMove();
 
     public:
-        RedMoveManager(const int depth, const Board &curBoard, RedMovePtr* currentMovePtr);
+        RedMoveManager(const int depth, const Board &curBoard, RedMovePtr curMovePtr);
         ~RedMoveManager();
+
+        inline void sortByHeuristics();
+
+        RedNextMoveDescriptor& getMoves(int i) {
+            return static_cast<RedNextMoveDescriptor&>(m_moves[i]);
+        }
+
+        void putMoves(int i, RedNextMoveDescriptor val) {
+            m_moves[i] = val;
+        }
+
+        __declspec(property(get = getMoves, put = putMoves)) RedNextMoveDescriptor moves[];
     };
 }

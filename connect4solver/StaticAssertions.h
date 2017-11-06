@@ -9,11 +9,19 @@ namespace connect4solver {
 
 #if ENABLE_THREADING
         static_assert((THREAD_AT_DEPTH % 2) == 1, "THREAD_AT_DEPTH must be odd--this restriction should be relaxed");
-        static_assert(MAX_CHILD_THREADS > 1, "MAX_CHILD_THREADS must be at least 2");
+        static_assert(DEBUG_THREADING || MAX_CHILD_THREADS > 1, "MAX_CHILD_THREADS must be at least 2");
         static_assert(MAX_CHILD_THREADS <= BOARD_WIDTH, "MAX_CHILD_THREADS must be at most the width of the board (7)");
         static_assert(DEPTH_COUNTS_TO_TRACK < THREAD_AT_DEPTH, "Can only track depths up through the depth that threading begins.");
-#else
+
+#if !DBG && DEBUG_THREADING
+#pragma message("Warning: Build configuration set to release, but DEBUG_THREADING is set")
+#endif // !DBG
+#else // ENABLE_THREADING
         static_assert(MAX_CHILD_THREADS == 0, "MAX_CHILD_THREADS must be 0 for non-threaded settings");
-#endif
+#endif // ENABLE_THREADING
+
+#if QUEUE_SEARCH
+        static_assert(ENABLE_THREADING, "QUEUE_SEARCH requires ENABLE_THREADING to be set");
+#endif // QUEUE_SEARCH
     }
 }

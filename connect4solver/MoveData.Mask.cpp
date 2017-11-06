@@ -26,7 +26,7 @@ inline const bool testFlag(const MoveDataBase data, const MoveDataBase mask) {
 
 inline const bool MoveData::maskEquals(const MoveDataBase data, const MoveDataBase mask)
 {
-#ifdef NDEBUG
+#if DBG
     return (data & mask) == mask;
 #else
     MoveDataBase val = data & mask;
@@ -42,11 +42,11 @@ inline const bool MoveData::maskEquals(const MoveDataBase mask) const
 MoveData::MoveData(const bool isSymmetric) :
     m_data((isSymmetric * IS_SYMMETRIC_MASK) | WORKER_THREAD_ID_MASK | REF_COUNT_1) {}
 
-const MoveData MoveData::createBlackLost(MoveDataBase data)
+const MoveDataBase MoveData::createBlackLostData(MoveDataBase data)
 {
     assert(!maskEquals(data, IS_FINISHED_MASK));
     etassert(!maskEquals(data, WORKER_THREAD_ID_MASK));
-    return MoveData(MoveDataBase((data & ~BLACK_LOST_MASK) | BLACK_LOST_MASK));
+    return MoveDataBase((data & ~BLACK_LOST_MASK) | BLACK_LOST_MASK);
 }
 
 #if ENABLE_THREADING
@@ -128,15 +128,6 @@ const bool MoveData::getBlackLost() const {
 #pragma endregion
 
 #pragma region RedMoveData
-#if USE_DYNAMIC_SIZE_RED_NEXT & !USE_SMART_POINTERS
-RedMoveData::~RedMoveData()
-{
-    if (getMaskValue(m_data, MOVES_TO_WIN) != BLACK_LOST) {
-        delete[] m_next;
-    }
-}
-#endif // USE_DYNAMIC_SIZE_RED_NEXT & !USE_SMART_POINTERS
-
 void RedMoveData::setNextHash(const int x, const BoardHash hash) {
     assertMax(x, (m_data & IS_SYMMETRIC_MASK) ? MAX_SYMMETRIC_COLUMN : MAX_COLUMN);
     assert(hash != 0);
@@ -146,12 +137,7 @@ void RedMoveData::setNextHash(const int x, const BoardHash hash) {
 const BoardHash* RedMoveData::getNextHashes(int &size) const
 {
     size = (m_data & IS_SYMMETRIC_MASK) ? SYMMETRIC_BOARD_WIDTH : BOARD_WIDTH;
-
-#if USE_DYNAMIC_SIZE_RED_NEXT & USE_SMART_POINTERS
-    return m_next.get();
-#else // USE_DYNAMIC_SIZE_RED_NEXT & USE_SMART_POINTERS
     return m_next;
-#endif // USE_DYNAMIC_SIZE_RED_NEXT & USE_SMART_POINTERS
 }
 
 #pragma endregion

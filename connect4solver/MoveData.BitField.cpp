@@ -39,7 +39,7 @@ namespace connect4solver {
         m_data.workerThreadId = 0xF;
     }
 
-    const MoveData MoveData::createBlackLost(MoveDataInternal data)
+    const MoveData MoveData::createBlackLostData(MoveDataInternal data)
     {
         assert(!data.isFinished);
         etassert(data.workerThreadId != 0xF);
@@ -58,7 +58,7 @@ namespace connect4solver {
 
     inline const bool MoveData::maskEquals(const MoveDataInternal data, const MoveDataInternal mask)
     {
-#ifdef NDEBUG
+#if DBG
         return (data & mask) == mask;
 #else
         MoveDataInternal val = data & mask;
@@ -74,7 +74,7 @@ namespace connect4solver {
     MoveData::MoveData(const bool isSymmetric) :
         m_data((isSymmetric * IS_SYMMETRIC_MASK) | THREAD_ID_MASK | REF_COUNT_1) {}
 
-    const MoveData MoveData::createBlackLost(MoveDataInternal data)
+    const MoveData MoveData::createBlackLostData(MoveDataInternal data)
     {
         assert(!maskEquals(data, IS_FINISHED_MASK));
         etassert(!maskEquals(data, THREAD_ID_MASK));
@@ -202,11 +202,16 @@ namespace connect4solver {
         return m_data.movesToWin == BLACK_LOST;
     }
 
+    MoveData MoveData::getBlackLostMove() const
+    {
+        return MoveData();
+    }
+
     void MoveData::setBlackLost(MovePtr** mptr) {
 #if USE_SMART_POINTERS
-        mptr.reset(new MoveData(createBlackLost(MoveDataInternal(mptr->m_data))));
+        mptr.reset(new MoveData(createBlackLostData(MoveDataInternal(mptr->m_data))));
 #else // USE_SMART_POINTERS
-        MovePtr tmp = new MoveData(createBlackLost(MoveDataInternal((**mptr)->m_data)));
+        MovePtr tmp = new MoveData(createBlackLostData(MoveDataInternal((**mptr)->m_data)));
         delete **mptr;
         **mptr = tmp;
 #endif // USE_SMART_POINTERS
@@ -237,41 +242,9 @@ namespace connect4solver {
 #pragma endregion
 
 #pragma region RedMoveData
-
-#if USE_DYNAMIC_SIZE_RED_NEXT
-    RedMoveData::RedMoveData() : MoveData(), m_next(nullptr) {}
-#else // USE_DYNAMIC_SIZE_RED_NEXT
     RedMoveData::RedMoveData() : MoveData(), m_next() {}
-#endif // USE_DYNAMIC_SIZE_RED_NEXT
 
-    RedMoveData::RedMoveData(const bool isSymmetric) : MoveData(isSymmetric), m_next() {
-#if USE_DYNAMIC_SIZE_RED_NEXT
-
-        if (isSymmetric) {
-            m_next = NextHashArrayPtr(new BoardHash[SYMMETRIC_BOARD_WIDTH]);
-            for (int i = 0; i < SYMMETRIC_BOARD_WIDTH; ++i) {
-                m_next[i] = 0;
-            }
-        }
-        else {
-            m_next = NextHashArrayPtr(new BoardHash[BOARD_WIDTH]);
-            for (int i = 0; i < BOARD_WIDTH; ++i) {
-                m_next[i] = 0;
-            }
-        }
-#endif
-    }
-
-#if !USE_SMART_POINTERS
-#if USE_DYNAMIC_SIZE_RED_NEXT
-    RedMoveData::~RedMoveData()
-    {
-        if (m_data.movesToWin != BLACK_LOST) {
-            delete[] m_next;
-        }
-    }
-#endif
-#endif
+    RedMoveData::RedMoveData(const bool isSymmetric) : MoveData(isSymmetric), m_next() {}
 
     void RedMoveData::setNextHash(const int x, const BoardHash hash) {
         assertMax(x, m_data.isSymmetric ? MAX_SYMMETRIC_COLUMN : MAX_COLUMN);
@@ -286,21 +259,8 @@ namespace connect4solver {
         size = (m_data.isSymmetric) ? SYMMETRIC_BOARD_WIDTH : BOARD_WIDTH;
         //size = (m_data & IS_SYMMETRIC_MASK) ? SYMMETRIC_BOARD_WIDTH : BOARD_WIDTH;
 
-#if USE_DYNAMIC_SIZE_RED_NEXT & USE_SMART_POINTERS
-        return m_next.get();
-#else
         return m_next;
-#endif
     }
-
-#if USE_DYNAMIC_SIZE_RED_NEXT & !USE_SMART_POINTERS
-    void RedMoveData::setBlackLost(RedMovePtr** ptr)
-    {
-        delete[](**ptr)->m_next;
-        MoveData::setBlackLost((MovePtr**)ptr);
-    }
-#endif
-
 #pragma endregion
 }
 #endif

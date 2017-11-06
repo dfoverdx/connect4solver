@@ -8,8 +8,8 @@
 #include <queue>
 #include "StaticAssertions.h"
 #include "Board.h"
-#include "piece.h"
-#include "searchTree.h"
+#include "Piece.h"
+#include "SearchTree.h"
 
 using namespace std;
 using namespace connect4solver;

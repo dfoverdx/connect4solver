@@ -3,7 +3,6 @@
 #include "Helpers.h"
 #include "MoveData.CompilerFlagTypedefs.h"
 
-
 namespace connect4solver {
     namespace moveDataConstants {
         constexpr MoveDataBase MOVES_TO_WIN_MASK_BITS = RequiredBits<BOARD_SIZE>::value;

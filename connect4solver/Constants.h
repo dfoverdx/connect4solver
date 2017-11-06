@@ -5,6 +5,7 @@
 #include "CompilerFlags.h"
 #include "Constants.ErrorMessages.h"
 #include "Constants.Threading.h"
+#include "Macros.h"
 #include "Typedefs.h"
 
 namespace connect4solver {
@@ -22,20 +23,13 @@ namespace connect4solver {
     constexpr int LAST_MOVE_DEPTH = MAX_MOVE_DEPTH - 1;
     constexpr int BLACK_LOST = BOARD_SIZE;
 
-    constexpr std::chrono::seconds CHECK_MEMORY_INTERAVAL = 3s;
+    constexpr std::chrono::seconds CHECK_MEMORY_INTERAVAL = 1s;
     constexpr std::chrono::milliseconds PRINT_PROGRESS_INTERVAL = 500ms;
 
-#ifdef NDEBUG
-    constexpr int DEPTH_COUNTS_TO_TRACK = 16;
-    constexpr int ALLOWED_MEMORY_PERCENT = 80;
-    constexpr int STATIC_MEMORY_REMAINING_LIMIT = 500; // MB
-    constexpr ull MIN_GARBAGE_TO_DELETE = 10000000;
-#else
-    constexpr int DEPTH_COUNTS_TO_TRACK = 22;
-    constexpr int ALLOWED_MEMORY_PERCENT = 2; // 80;
-    constexpr int STATIC_MEMORY_LIMIT = 100; // MB
-    constexpr ull MIN_GARBAGE_TO_DELETE = 10000000;
-#endif
+    constexpr int DEPTH_COUNTS_TO_TRACK = dbgVal(22, 16);
+    constexpr int ALLOWED_MEMORY_PERCENT = dbgVal(2, 50);
+    constexpr int STATIC_MEMORY_REMAINING_LIMIT = dbgVal(100, 500); // MB
+    constexpr ull MIN_GARBAGE_TO_DELETE = 0; // dbgVal(1000000, 10000000);
 
     constexpr int MAX_THREADS = MAX_CHILD_THREADS + 1;
 }

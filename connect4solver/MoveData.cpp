@@ -1,3 +1,4 @@
+#include "MoveCache.h"
 #include "MoveData.h"
 
 using namespace std;
@@ -15,14 +16,8 @@ MoveData::MoveData(const MoveData &md) : m_data(md.m_data.load()) {}
 MoveData::MoveData(const MoveData &md) : m_data(md.m_data) {}
 #endif
 
-void MoveData::setBlackLost(MovePtr* mptr) {
-#if USE_SMART_POINTERS
-    mptr.reset(new MoveData(createBlackLost(MoveDataInternal(mptr->m_data))));
-#else // USE_SMART_POINTERS
-    MovePtr tmp = new MoveData(createBlackLost(MoveDataInternal((*mptr)->m_data)));
-    delete *mptr;
-    *mptr = tmp;
-#endif // USE_SMART_POINTERS
+MoveData* MoveData::getBlackLostMove() const {
+    return new MoveData(createBlackLostData(m_data));
 }
 
 #pragma endregion
@@ -46,35 +41,39 @@ const BoardHash BlackMoveData::getNextHash() const
 
 #pragma region RedMoveData
 
-#if USE_DYNAMIC_SIZE_RED_NEXT
-RedMoveData::RedMoveData() : MoveData(), m_next(nullptr) {}
-
-RedMoveData::RedMoveData(const bool isSymmetric) : MoveData(isSymmetric), m_next() {
-    if (isSymmetric) {
-        m_next = NextHashArrayPtr(new BoardHash[SYMMETRIC_BOARD_WIDTH]);
-        for (int i = 0; i < SYMMETRIC_BOARD_WIDTH; ++i) {
-            m_next[i] = 0;
-        }
-    }
-    else {
-        m_next = NextHashArrayPtr(new BoardHash[BOARD_WIDTH]);
-        for (int i = 0; i < BOARD_WIDTH; ++i) {
-            m_next[i] = 0;
-        }
-    }
-}
-#else // USE_DYNAMIC_SIZE_RED_NEXT
 RedMoveData::RedMoveData() : MoveData(), m_next() {}
 RedMoveData::RedMoveData(const bool isSymmetric) : MoveData(isSymmetric), m_next() {}
-#endif // USE_DYNAMIC_SIZE_RED_NEXT
-
-
-void RedMoveData::setBlackLost(RedMovePtr* ptr)
-{
-#if USE_DYNAMIC_SIZE_RED_NEXT & !USE_SMART_POINTERS
-    delete[](*ptr)->m_next;
-#endif // USE_DYNAMIC_SIZE_RED_NEXT & !USE_SMART_POINTERS
-    MoveData::setBlackLost((MovePtr*)ptr);
-}
 
 #pragma endregion
+
+namespace {
+    inline void decRedNextRefsInner(RedMovePtr &ptr, const int depth) {
+        int size;
+        const BoardHash* hashes = ptr->getNextHashes(size);
+        moveCache::Cache &cache = *moveCache::moveCaches[depth + 1];
+
+        for (int i = 0; i < size; ++i) {
+            if (hashes[i] != 0) {
+                cache.at(hashes[i])->decRefCount();
+            }
+        }
+    }
+}
+
+#if ET | TGC
+void connect4solver::decRedNextRefs(RedMovePtr &ptr, const int depth, const uLock &cacheLock)
+{
+    ettgcassert(cacheLock.mutex() == &moveCache::moveCacheMutexes[depth + 1] && cacheLock.owns_lock());
+    decRedNextRefsInner(ptr, depth);
+}
+
+void connect4solver::decRedNextRefs(RedMovePtr &ptr, const int depth, const lock_guard<mutex> &cacheLock)
+{
+    decRedNextRefsInner(ptr, depth);
+}
+#else // ET | TGC
+void connect4solver::decRedNextRefs(RedMovePtr &ptr, const int depth)
+{
+    decRedNextRefsInner(ptr, depth);
+}
+#endif // ET | TGC

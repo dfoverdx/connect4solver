@@ -11,6 +11,7 @@ typedef unsigned long ulong;
 typedef unsigned long long ull;
 
 typedef std::unique_lock<std::mutex> uLock;
+typedef std::lock_guard<std::mutex> lGuard;
 
 namespace connect4solver {
     typedef DllExport int Heuristic;

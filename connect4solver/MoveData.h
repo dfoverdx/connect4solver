@@ -23,7 +23,7 @@ namespace connect4solver {
     private:
         MoveData(const MoveData &md);
         MoveData(const MoveDataBase data);
-        static const MoveData createBlackLost(MoveDataInternal data);
+        static const MoveDataBase createBlackLostData(MoveDataInternal data);
 
 #if !BF
         // Helper functions
@@ -39,7 +39,7 @@ namespace connect4solver {
                 7:      is finished flag
                 8-10:   # of references to this move
                 11-14:  worker thread id
-                15:  unused
+                15:     unused
         */
         MoveDataInternal m_data;
 
@@ -60,7 +60,8 @@ namespace connect4solver {
         const bool getIsSymmetric() const;
         const bool getBlackLost() const;
 
-        static void setBlackLost(MovePtr* mptr);
+        // intentionally returns MoveData* rather than MovePtr so that it can be called inside shared_ptr::reset()
+        MoveData* getBlackLostMove() const;
 
 #if ENABLE_THREADING
         // returns true if the thread successfully acquired access to the move data,
@@ -90,22 +91,12 @@ namespace connect4solver {
 
     class RedMoveData : public MoveData {
     private:
-#if USE_DYNAMIC_SIZE_RED_NEXT
-        NextHashArrayPtr m_next;
-#else
         BoardHash m_next[BOARD_WIDTH];
-#endif
 
     public:
         RedMoveData();
         RedMoveData(const bool isSymmetric);
-
-#if !USE_SMART_POINTERS & USE_DYNAMIC_SIZE_RED_NEXT
-        ~RedMoveData();
-#endif
-
-        static void setBlackLost(RedMovePtr* ptr);
-
+        
         void setNextHash(const int x, const BoardHash hash);
         const BoardHash* getNextHashes(int &size) const;
     };
@@ -114,4 +105,10 @@ namespace connect4solver {
 #pragma pack(pop)
 #endif
 
+#if ET | TGC
+    extern void decRedNextRefs(RedMovePtr &ptr, const int depth, const uLock &cacheLock);
+    extern void decRedNextRefs(RedMovePtr &ptr, const int depth, const std::lock_guard<std::mutex> &cacheLock);
+#else // ET | TGX
+    extern void decRedNextRefs(RedMovePtr &ptr, const int depth);
+#endif // ET | TGX
 }

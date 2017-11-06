@@ -4,13 +4,13 @@ connect4solver
 General
 -------
 
-*   Figure out if there is a way to place restrictions on template parameters in current VC++ version.  (May need to
+*   ~~Figure out if there is a way to place restrictions on template parameters in current VC++ version.  (May need to
     scrap this--looks `concept` and `require` keywords are c\++20, and current version is c\++17.)  Ideally, it would
     be similar to C#'s `where T : IMyInterface` so that IntelliSense can do more in templated functions (e.g.
     `SearchTree::search()`, which currently has no idea that `CurMPtr` is always a `MovePtr`; getting a
-    `MoveManager` "interface" would be helpful, too).
-    -   [How can I simulate interfaces in C++?](https://stackoverflow.com/questions/1216750/how-can-i-simulate-interfaces-in-c)
-    -   Generics *might* be the answer?  [Generics and Templates (Visual C++)](https://msdn.microsoft.com/en-us/library/sbh15dya.aspx)
+    `MoveManager` "interface" would be helpful, too).~~
+    -   ~~[How can I simulate interfaces in C++?](https://stackoverflow.com/questions/1216750/how-can-i-simulate-interfaces-in-c)~~
+    -   ~~Generics *might* be the answer?  [Generics and Templates (Visual C++)](https://msdn.microsoft.com/en-us/library/sbh15dya.aspx)~~
 
 
 MoveData
@@ -77,7 +77,7 @@ SearchTree
         `search()`
     -   (Note: don't bother trying to pull out the `threadId` argument--I've given this more thought than it deserves
         and there is absolutely no point.)
-*   Consider renaming `SearchTree::status` to `SearchTree::state` as it seems more appropriate.
+*   ~~Consider renaming `SearchTree::status` to `SearchTree::state` as it seems more appropriate.~~
 *   Consider locking the `moveCache` with a reader/writer lock rather than a basic mutex.  This would allow multiple 
     readers or a single writer to access the cache at a time.  See [How to make a multiple-read/single-write lock from more basic synchronization primitives?](https://stackoverflow.com/questions/27860685/how-to-make-a-multiple-read-single-write-lock-from-more-basic-synchronization-pr).
 
@@ -278,44 +278,44 @@ void processMove(BoardMove<CurMPtr> &bm) {
 Garbage Collector (currently in SearchTree.cpp)
 -----------------------------------------------
 
-*   Pull GC out of SearchTree.cpp into its own class, then add `GarbageCollector` as a friend to `SearchTree`
-    -   Pull all memory management out of `SearchTree` and into new class.
-    -   Pull GC struct out of `SearchTree::status` and place as static `struct` in `GarbageCollector`.
-*   Probably should delete `USE_SMART_GC` code since, as the majaority of moves get removed from a cache during GC,
+*   ~~Pull GC out of SearchTree.cpp into its own class, then add `GarbageCollector` as a friend to `SearchTree`~~
+    -   ~~Pull all memory management out of `SearchTree` and into new class.~~
+    -   ~~Pull GC struct out of `SearchTree::status` and place as static `struct` in `GarbageCollector`.~~
+*   ~~Probably should delete `USE_SMART_GC` code since, as the majaority of moves get removed from a cache during GC,
     it is slower to maintain the hashset of unreferenced moves and takes more memory than simply iterating through the
-    whole cache each time
-    -   If not, need to add `MoveManager` as friend to `GarbageCollector`
-    -   Consider a hybrid approach that uses elements of smart GC within dumb GC code so that if we have to make
+    whole cache each time~~
+    -   ~~If not, need to add `MoveManager` as friend to `GarbageCollector`~~
+    -   ~~Consider a hybrid approach that uses elements of smart GC within dumb GC code so that if we have to make
         multiple passes through a certain depth, we've tracked just the nodes that were recently set to 0-references
-        on the last pass.  This may or may not actually reduce performance.
+        on the last pass.  This may or may not actually reduce performance.~~
 *   Theoretically, the GC should be able to run in parallel to the search since it won't delete any referenced moves
     and moves are re-referenced as soon as they're determined to be a move that follows a board state.  As long as
     both the GC and the search lock the depth's cache's mutex when cleaning/enumerating boards, the GC could be
     abstracted to run on its own thread.  This optimization (if it even *is* an optimzation) may very well be far more
     trouble than it is worth--but might be fun.
-*   Add state of GC (running, not running, progress?) to ~~`SearchTree::status`~~ `GarbageCollector`
+*   ~~Add state of GC (running, not running, progress?) to `GarbageCollector`~~
 *   Consider changing `SearchTree::cal.moveCache` from type `MoveCache[]` to `MoveCache*[]`
     -   This allows the GC, if enough moves are deleted from a cache, to create a new cache, copy the items from the
         old one into the new one, delete the old one, and set the pointer to the new one.  Since a cache only stores
         pointers to `MoveData`, copying the items into the new cache shouldn't even interrupt processing of
         moves--only the insertion and retrieval of moves to and from the cache itself (which requires a lock anyway).
-*   Remove ioLock from GC (SearchTree.cpp `SearchTree::manageMemory()`)
-    -   Theoretically this should remove race condition dining philosophers problem between GC, IO, and
-        `SearchTree::setCheckMemoryAtInterval()`
-    -   If moving GC into its own thread, `SearchTree::setCheckMemoryAtInterval()` becomes unnecessary anyway.
+*   ~~Remove ioLock from GC (SearchTree.cpp `SearchTree::manageMemory()`)~~
+    -   ~~Theoretically this should remove race condition dining philosophers problem between GC, IO, and
+        `SearchTree::setCheckMemoryAtInterval()`~~
+    -   ~~If moving GC into its own thread, `SearchTree::setCheckMemoryAtInterval()` becomes unnecessary anyway.~~
 *   If implementing [this feature](#CacheSizeDetail), update `estimatedDataDeleted` algorithm.
 
 <a name="ProgressPrinter"></a>
 Progress Printer (currently in SearchTree.IO.cpp)
 -------------------------------------------------
 
-*   Create `ProgressPrinter` class, add it as a friend to `SearchTree` and `GarbageCollector`, and refactor all 
-    code out of **SearchTree.IO.cpp**.
+*   ~~Create `ProgressPrinter` class, add it as a friend to `SearchTree` and `GarbageCollector`, and refactor all 
+    code out of **SearchTree.IO.cpp**.~~
 *   Figure out how to hide the console cursor (currently code is in **main.cpp**, but it doesn't appear to be working)
 *   Auto-size console to be large enough to display whole of `printProgress()` output when process starts
-*   Move all IO operations out of `#if VERBOSE` sections and add a set of messages/warnings to 
-    `SearchTree::status`.
-*   Add functionality to `SearchTree::printProgress()` to handle display of GC.
+*   ~~Move all IO operations out of `#if VERBOSE` sections and add a set of messages/warnings to 
+    `SearchTree::status`.~~
+*   ~~Add functionality to `SearchTree::printProgress()` to handle display of GC.~~
 *   When implementing [Connect4SolverGUI](#connect4SolverGui), add use of named pipes ([C++ docs](https://msdn.microsoft.com/en-us/library/windows/desktop/aa365592%28v=vs.85%29.aspx?f=255&MSPPError=-2147217396))
     to corralle and expose progress data.
     -   Increase refresh rate from 2Hz to 60Hz since it no longer needs to print anything to `cout` which is the major
@@ -369,39 +369,39 @@ Add database support: `DatabaseManager` class
 NextMoveDescriptor
 ------------------
 
-*   Detemplatize.
-*   Change `move` type to `MovePtr*`.
-*   Update `MoveManager` (and subtypes) and `SearchTree` functions to accomodate change using 
+*   ~~Detemplatize.~~
+*   ~~Change `move` type to `MovePtr*`.~~
+*   ~~Update `MoveManager` (and subtypes) and `SearchTree` functions to accomodate change using 
     `dynamic_pointer_cast<NextMPtr*>` and `dynamic_pointer_cast<NextMPtr>` when using smart pointers or simple 
-    `(NextMPtr*)` and `(NextMPtr)` when not.  (Add macros to **SearchTree.Macros.h**.)
+    `(NextMPtr*)` and `(NextMPtr)` when not.  (Add macros to **SearchTree.Macros.h**.)~~
 
 
 MoveManager
 -----------
 
-*   Make `MoveManager`'s methods IntelliSense-accessible in `SearchTree::search()`.  Here are some ideas:
-    -   Create a base class `MoveManagerBase` with public `virtual` method(s) used in `MoveManager<CurMPtr>`.
-        *   Define `operator[]`'s return type as `NextMoveDescriptor`.
-        *   Update `SearchTree::enumerateBoards()`
-            -   Remove `MM` template parameter, and replace with 
+*   ~~Make `MoveManager`'s methods IntelliSense-accessible in `SearchTree::search()`.  Here are some ideas:~~
+    -   ~~Create a base class `MoveManagerBase` with public `virtual` method(s) used in `MoveManager<CurMPtr>`.~~
+        *   ~~Define `operator[]`'s return type as `NextMoveDescriptor`.~~
+        *   ~~Update `SearchTree::enumerateBoards()`~~
+            -   ~~Remove `MM` template parameter, and replace with~~
                 ```cpp
                 typedef conditional<is_same<...>, BlackMoveManager, RedMoveManager>::type MM;
                 ```
-            -   Update `MM &mManager` argument to `MoveManagerBase &mManager`
-            -   Cast `mManager` as `(MM)mManager` when necessary
-        *   Update `SearchTree::search()`
-            -   After initializing `mManager`, create a second variable `MoveManagerBase &mmb = (MoveManagerBase)mManager`.
-        *   Unless we implement using smart pointers for the `MoveManager`s, should not need `dynamic_cast` or 
-            `dynamic_pointer_cast`.
-    -   Create a wrapper template struct with a function that returns `NextMoveDescriptor` from 
-        `MoveManager.moves` so that IntelliSense at least knows it's getting a `NextMoveDescriptor`.
+            -   ~~Update `MM &mManager` argument to `MoveManagerBase &mManager`~~
+            -   ~~Cast `mManager` as `(MM)mManager` when necessary~~
+        *   ~~Update `SearchTree::search()`~~
+            -   ~~After initializing `mManager`, create a second variable `MoveManagerBase &mmb = (MoveManagerBase)mManager`.~~
+        *   ~~Unless we implement using smart pointers for the `MoveManager`s, should not need `dynamic_cast` or 
+            `dynamic_pointer_cast`.~~
+    -   ~~Create a wrapper template struct with a function that returns `NextMoveDescriptor` from 
+        `MoveManager.moves` so that IntelliSense at least knows it's getting a `NextMoveDescriptor`.~~
 *   Add two custom `iterator`s (one for threaded and one for not) that return all the data necessary for evaluating
     the next move.
     -   Look at currently-commented-out `acquireMove()` in SearchTree.cpp for threaded approach
     -   To be used rather than the current for-loop in `SearchTree::search()`
     -   This is an abstraction that makes it easy/clean to find the next move, whether in parallel or in serial
-*   <a name="CacheSizeDetail"></a>Possibly keep track of number of `RedMovePtr`s and `BlackMovePtr`s vs the number of `MovePtr`s (`BLACK_LOST`
-    moves) at each level.
+*   <a name="CacheSizeDetail"></a>Possibly keep track of number of `RedMovePtr`s and `BlackMovePtr`s vs the number of 
+    `MovePtr`s (`BLACK_LOST` moves) at each level.
     -   Interesting stat to display in [Connect4SolverGUI](#connect4SolverGui).
     -   Gives better estimate for which cache the GC should start with.
 

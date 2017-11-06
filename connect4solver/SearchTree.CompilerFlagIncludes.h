@@ -9,13 +9,3 @@
 #if USE_SMART_POINTERS
 #include <memory>
 #endif // USE_SMART_POINTERS
-
-#if MAP
-#include <map>
-#else
-#include <unordered_map>
-#endif // MAP
-
-#if !SGC
-#include <queue>
-#endif // SGC

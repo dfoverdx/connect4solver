@@ -104,6 +104,7 @@
       <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <SDLCheck>true</SDLCheck>
       <AdditionalIncludeDirectories>$(SolutionDir)\cpp11-on-multicore\common;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <StringPooling>true</StringPooling>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -149,7 +150,11 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="Constants.ErrorMessages.h" />
+    <ClInclude Include="GarbageCollector.h" />
+    <ClInclude Include="IoMessage.h" />
     <ClInclude Include="Macros.h" />
+    <ClInclude Include="MoveCache.CompilerFlagIncludes.h" />
+    <ClInclude Include="MoveCache.h" />
     <ClInclude Include="MoveData.CompilerFlagTypedefs.h" />
     <ClInclude Include="MoveManager.h" />
     <ClInclude Include="Board.h" />
@@ -161,6 +166,7 @@
     <ClInclude Include="Helpers.h" />
     <ClInclude Include="Constants.MoveData.h" />
     <ClInclude Include="NextMoveDescriptor.h" />
+    <ClInclude Include="ProgressPrinter.h" />
     <ClInclude Include="SearchTree.CompilerFlagIncludes.h" />
     <ClInclude Include="SearchTree.Macros.h" />
     <ClInclude Include="StaticAssertions.h" />
@@ -173,6 +179,8 @@
     <ClInclude Include="Typedefs.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="GarbageCollector.cpp" />
+    <ClCompile Include="MoveCache.cpp" />
     <ClCompile Include="MoveData.cpp" />
     <ClCompile Include="MoveData.Mask.cpp" />
     <ClCompile Include="MoveManager.cpp" />
@@ -180,10 +188,9 @@
     <ClCompile Include="BoardState.cpp" />
     <ClCompile Include="Constants.Threading.h" />
     <ClCompile Include="main.cpp" />
-    <ClCompile Include="MoveData.BitField.cpp" />
     <ClCompile Include="PopCount.cpp" />
+    <ClCompile Include="ProgressPrinter.cpp" />
     <ClCompile Include="SearchTree.cpp" />
-    <ClCompile Include="SearchTree.IO.cpp" />
   </ItemGroup>
   <ItemGroup>
     <Natvis Include="connect4solver.natvis" />

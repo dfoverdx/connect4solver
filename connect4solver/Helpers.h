@@ -108,11 +108,22 @@ operator<<(std::basic_ostream<_Elem, _Traits> &i, helperPrintTime::printTime &pt
     ull hours = minutes / 60;
     ull days = hours / 24;
 
-    i 
-        << days << ':' << std::setfill('0') << std::setw(2)
-        << hours % 24 << ':' << std::setw(2)
-        << minutes % 60 << ':' << std::setw(2)
-        << seconds % 60 << std::setw(w) << std::setfill(f);
+    if (days > 0) {
+        i << days << ':' << std::setfill('0') << std::setw(2);
+    }
+
+    if (hours > 0) {
+        i << hours % 24 << ':' << std::setfill('0') << std::setw(2);
+    }
+
+    if (minutes > 0) {
+        i << minutes % 60 << ':';
+    }
+    else {
+        i << "0:";
+    }
+
+    i << std::setfill('0') << std::setw(2) << seconds % 60 << std::setw(w) << std::setfill(f);
 
     return i;
 }

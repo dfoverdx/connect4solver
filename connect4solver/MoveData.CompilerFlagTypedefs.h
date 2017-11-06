@@ -1,8 +1,6 @@
 #pragma once
 #include "CompilerFlags.h"
-#include "Constants.MoveData.h"
 #include "Typedefs.h"
-
 
 namespace connect4solver {
     typedef ushort MoveDataBase;
@@ -39,17 +37,9 @@ namespace connect4solver {
     typedef std::shared_ptr<MoveData> MovePtr;
     typedef std::shared_ptr<BlackMoveData> BlackMovePtr;
     typedef std::shared_ptr<RedMoveData> RedMovePtr;
-
-#if USE_DYNAMIC_SIZE_RED_NEXT
-    typedef std::unique_ptr<BoardHash[]> NextHashArrayPtr;
-#endif // USE_DYNAMIC_SIZE_RED_NEXT
 #else // USE_SMART_POINTERS
     typedef MoveData* MovePtr;
     typedef BlackMoveData* BlackMovePtr;
     typedef RedMoveData* RedMovePtr;
-
-#if USE_DYNAMIC_SIZE_RED_NEXT
-    typedef BoardHash* NextHashArrayPtr;
-#endif
-#endif
+#endif // USE_SMART_POINTERS
 }
